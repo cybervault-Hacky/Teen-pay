@@ -5,29 +5,40 @@ import { useState } from "react";
 import { Container } from "@/components/shell";
 import {
   Amount,
-  Badge,
   Button,
   Card,
   ComingSoonSheet,
   ProgressBar,
   Reveal,
+  SandboxBadge,
   SectionHeader,
 } from "@/components/ui";
-import { SpaceCard } from "@/components/money";
-import { isSampleData, mockGoals, mockWallet } from "@/data/mock";
-import { goalProgress, type MoneySpace } from "@/domain";
+import { ContributeSheet, MoveMoneySheet, SpaceCard } from "@/components/money";
+import { useSandbox } from "@/sandbox";
+import { goalProgress, type LedgerSpace, type MoneySpace, type SavingsGoal } from "@/domain";
 import { formatPercent } from "@/lib/format";
 
 /** Money — spaces, goals and the shape of the balance. */
 export default function MoneyPage() {
-  const [sheet, setSheet] = useState<{ feature: string; body: string } | null>(null);
+  const { wallet, goals } = useSandbox();
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveFrom, setMoveFrom] = useState<LedgerSpace>("spend");
+  const [contributeGoal, setContributeGoal] = useState<SavingsGoal | null>(null);
+  const [comingSoon, setComingSoon] = useState(false);
 
   const upcomingSpace: MoneySpace = {
     type: "upcoming",
     label: "Upcoming",
-    description: "Allowance and gifts on their way to you.",
-    balancePaise: mockWallet.upcomingPaise,
-    currency: mockWallet.currency,
+    description: "Pending splits and requests on their way to you.",
+    balancePaise: wallet.upcomingPaise,
+    currency: wallet.currency,
+  };
+
+  const openMove = (space: MoneySpace) => {
+    if (space.type !== "upcoming") {
+      setMoveFrom(space.type);
+      setMoveOpen(true);
+    }
   };
 
   return (
@@ -48,24 +59,17 @@ export default function MoneyPage() {
                 variant="secondary"
                 size="sm"
                 icon={<ArrowLeftRight className="size-4" aria-hidden="true" />}
-                onClick={() =>
-                  setSheet({
-                    feature: "Move money",
-                    body: "Shift money between Spaces in seconds.",
-                  })
-                }
+                onClick={() => {
+                  setMoveFrom("spend");
+                  setMoveOpen(true);
+                }}
               >
                 Move
               </Button>
               <Button
                 size="sm"
                 icon={<Plus className="size-4" aria-hidden="true" />}
-                onClick={() =>
-                  setSheet({
-                    feature: "New goal",
-                    body: "Name it, set a target, and start saving.",
-                  })
-                }
+                onClick={() => setComingSoon(true)}
               >
                 New goal
               </Button>
@@ -79,12 +83,12 @@ export default function MoneyPage() {
               <p className="text-xs font-semibold tracking-[0.08em] text-faint uppercase">
                 Available across Spaces
               </p>
-              <Amount value={mockWallet.availablePaise} size="lg" className="mt-1.5 block" />
+              <Amount value={wallet.availablePaise} size="lg" className="mt-1.5 block" />
             </div>
             <div className="flex flex-col items-end gap-2">
-              <Amount value={mockWallet.upcomingPaise} size="sm" tone="muted" />
+              <Amount value={wallet.upcomingPaise} size="sm" tone="muted" />
               <span className="text-xs text-faint">expected soon</span>
-              {isSampleData() && <Badge tone="neutral">Sample data</Badge>}
+              <SandboxBadge />
             </div>
           </Card>
         </Reveal>
@@ -97,38 +101,23 @@ export default function MoneyPage() {
             </h2>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <SpaceCard
-                space={mockWallet.spaces.spend}
-                availablePaise={mockWallet.availablePaise}
-                onMove={(space) =>
-                  setSheet({
-                    feature: `Move from ${space.label}`,
-                    body: "Shift money between Spaces in seconds.",
-                  })
-                }
+                space={wallet.spaces.spend}
+                availablePaise={wallet.availablePaise}
+                onMove={openMove}
               />
               <SpaceCard
-                space={mockWallet.spaces.save}
-                availablePaise={mockWallet.availablePaise}
-                onMove={(space) =>
-                  setSheet({
-                    feature: `Move from ${space.label}`,
-                    body: "Shift money between Spaces in seconds.",
-                  })
-                }
+                space={wallet.spaces.save}
+                availablePaise={wallet.availablePaise}
+                onMove={openMove}
               />
               <SpaceCard
-                space={mockWallet.spaces.goals}
-                availablePaise={mockWallet.availablePaise}
-                onMove={(space) =>
-                  setSheet({
-                    feature: `Move from ${space.label}`,
-                    body: "Shift money between Spaces in seconds.",
-                  })
-                }
+                space={wallet.spaces.goals}
+                availablePaise={wallet.availablePaise}
+                onMove={openMove}
               />
               <SpaceCard
                 space={upcomingSpace}
-                availablePaise={mockWallet.availablePaise}
+                availablePaise={wallet.availablePaise}
                 upcoming
                 onMove={() => undefined}
               />
@@ -138,12 +127,12 @@ export default function MoneyPage() {
 
         <Reveal>
           <section aria-labelledby="goals-all">
-            <SectionHeader title="Goals" caption={`${mockGoals.length} active`} />
+            <SectionHeader title="Goals" caption={`${goals.length} active`} />
             <h2 id="goals-all" className="sr-only">
               Savings goals
             </h2>
             <div className="mt-3 flex flex-col gap-3">
-              {mockGoals.map((goal) => {
+              {goals.map((goal) => {
                 const progress = goalProgress(goal);
                 return (
                   <Card key={goal.id} className="p-5">
@@ -176,12 +165,7 @@ export default function MoneyPage() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() =>
-                          setSheet({
-                            feature: `Add to ${goal.name}`,
-                            body: "Top up this goal from any Space.",
-                          })
-                        }
+                        onClick={() => setContributeGoal(goal)}
                       >
                         Add money
                       </Button>
@@ -194,11 +178,13 @@ export default function MoneyPage() {
         </Reveal>
       </div>
 
+      <MoveMoneySheet open={moveOpen} onClose={() => setMoveOpen(false)} initialFrom={moveFrom} />
+      <ContributeSheet goal={contributeGoal} onClose={() => setContributeGoal(null)} />
       <ComingSoonSheet
-        open={sheet !== null}
-        onClose={() => setSheet(null)}
-        feature={sheet?.feature ?? ""}
-        body={sheet?.body}
+        open={comingSoon}
+        onClose={() => setComingSoon(false)}
+        feature="New goal"
+        body="Name it, set a target, and start saving."
       />
     </Container>
   );

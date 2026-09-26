@@ -6,6 +6,7 @@ import {
   BalanceCard,
   GoalPreview,
   QuickActions,
+  RequestsPreview,
   SpacesPreview,
 } from "@/components/home";
 
@@ -23,6 +24,9 @@ export default function HomePage() {
           <QuickActions />
         </Reveal>
         <Reveal>
+          <RequestsPreview />
+        </Reveal>
+        <Reveal>
           <SpacesPreview />
         </Reveal>
         <Reveal>
@@ -32,7 +36,7 @@ export default function HomePage() {
           <ActivityPreview />
         </Reveal>
         <p className="pb-2 text-center text-xs text-faint">
-          TeenPay Preview · Figures shown are sample data — no real money moves.
+          TeenPay Sandbox · Simulated money — nothing here is real.
         </p>
       </div>
     </Container>

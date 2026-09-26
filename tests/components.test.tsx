@@ -12,7 +12,22 @@ import {
   Switch,
   TransactionRow,
 } from "@/components/ui";
-import { mockTransactions } from "@/data/mock";
+import type { Transaction } from "@/domain";
+
+function txFixture(overrides: Partial<Transaction> = {}): Transaction {
+  return {
+    id: "tx_test",
+    title: "Monthly pocket money",
+    counterparty: { name: "Meera Sharma", kind: "parent" },
+    amountPaise: 100_000,
+    direction: "in",
+    category: "family",
+    status: "settled",
+    occurredAt: "2026-09-26T09:05:00.000Z",
+    source: "ledger",
+    ...overrides,
+  };
+}
 
 describe("Button", () => {
   it("renders its label and handles clicks", () => {
@@ -88,8 +103,7 @@ describe("Input", () => {
 
 describe("TransactionRow", () => {
   it("renders title, counterparty and signed amount", () => {
-    const tx = mockTransactions[0];
-    render(<TransactionRow transaction={tx} />);
+    render(<TransactionRow transaction={txFixture()} />);
     expect(screen.getByText("Monthly pocket money")).toBeInTheDocument();
     expect(screen.getByText(/Meera Sharma/)).toBeInTheDocument();
     expect(screen.getByText("+₹1,000")).toBeInTheDocument();
@@ -97,17 +111,29 @@ describe("TransactionRow", () => {
 
   it("acts as a button when selectable", () => {
     const onSelect = vi.fn();
-    const tx = mockTransactions[1];
+    const tx = txFixture({ id: "tx_shop", title: "Crossword Bookstore", direction: "out" });
     render(<TransactionRow transaction={tx} onSelect={onSelect} />);
     fireEvent.click(screen.getByRole("button", { name: /Crossword Bookstore/ }));
     expect(onSelect).toHaveBeenCalledWith(tx);
   });
 
   it("flags pending transactions", () => {
-    const pending = mockTransactions.find((t) => t.status === "pending");
-    expect(pending).toBeDefined();
-    render(<TransactionRow transaction={pending!} />);
+    render(<TransactionRow transaction={txFixture({ status: "pending" })} />);
     expect(screen.getByText("Pending")).toBeInTheDocument();
+  });
+
+  it("announces request rows for screen readers", () => {
+    render(
+      <TransactionRow
+        transaction={txFixture({
+          title: "Money request",
+          source: "request",
+          requestId: "req_1",
+          status: "pending",
+        })}
+      />,
+    );
+    expect(screen.getByText("Money request")).toBeInTheDocument();
   });
 });
 

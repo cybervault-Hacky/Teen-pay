@@ -9,6 +9,7 @@ export * from "./wallet";
 export * from "./ledger";
 export * from "./transactions";
 export * from "./payments";
+export * from "./requests";
 export * from "./goals";
 export * from "./safety";
 export * from "./notifications";

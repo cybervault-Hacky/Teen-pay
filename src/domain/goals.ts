@@ -7,6 +7,21 @@ import type { MinorUnits } from "./wallet";
 
 export type GoalId = string;
 
+/**
+ * Static goal definition. `savedPaise` is NOT stored here — it is derived
+ * by folding goal_contribution ledger entries (see `src/sandbox/`).
+ */
+export interface GoalBlueprint {
+  id: GoalId;
+  teenId: string;
+  name: string;
+  tag?: string;
+  targetPaise: MinorUnits;
+  dueDate?: string;
+  /** ISO date the goal was created — lets the sandbox rebuild SavingsGoal. */
+  createdAt: string;
+}
+
 export interface SavingsGoal {
   id: GoalId;
   teenId: string;

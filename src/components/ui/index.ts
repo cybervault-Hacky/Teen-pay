@@ -25,7 +25,13 @@ export type { EmptyStateProps } from "./EmptyState";
 export { ErrorState } from "./ErrorState";
 export type { ErrorStateProps } from "./ErrorState";
 export { IconButton } from "./IconButton";
-export type { IconButtonProps, IconButtonSize, IconButtonVariant } from "./IconButton";
+export type { IconButtonProps } from "./IconButton";
+export { iconButtonClassName } from "./iconButtonStyles";
+export type {
+  IconButtonSize,
+  IconButtonStyleOptions,
+  IconButtonVariant,
+} from "./iconButtonStyles";
 export { Input } from "./Input";
 export type { InputProps } from "./Input";
 export { LoadingState } from "./LoadingState";
@@ -35,6 +41,7 @@ export type { NoticeProps, NoticeTone } from "./Notice";
 export { ProgressBar } from "./ProgressBar";
 export type { ProgressBarProps, ProgressTone } from "./ProgressBar";
 export { Reveal } from "./Reveal";
+export { SandboxBadge } from "./SandboxBadge";
 export type { RevealProps } from "./Reveal";
 export { SectionHeader } from "./SectionHeader";
 export type { SectionAction, SectionHeaderProps } from "./SectionHeader";

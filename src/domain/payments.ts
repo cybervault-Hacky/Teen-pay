@@ -2,6 +2,7 @@
  * Payments domain (conceptual in Phase 1 — no real money movement).
  *
  * Teens can only pay *trusted* destinations: parent-approved recipients
+ * (live in the Phase 2 sandbox against the local ledger).
  * and vetted merchants. There is intentionally no "pay anyone" path.
  * Real rails (UPI, cards, bank APIs) integrate behind `PaymentIntent`
  * in a later phase.
@@ -15,6 +16,10 @@ export type RecipientId = string;
 export interface TrustedRecipient {
   id: RecipientId;
   name: string;
+  /** Payment handle shown in review/success, e.g. "@riya". */
+  handle: string;
+  /** Who the recipient is — drives counterparty kind + request routing. */
+  kind: "parent" | "teen";
   avatarSeed: string;
   relationship: string;
   /** Parent approval is required before a recipient becomes payable. */

@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { DEFAULT_THEME, THEME_STORAGE_KEY, type ThemeName } from "@/design/tokens";
+import { SandboxProvider } from "@/sandbox";
 
 interface ThemeContextValue {
   theme: ThemeName;
@@ -47,7 +48,7 @@ export function ThemeInitScript() {
   );
 }
 
-function ThemeProvider({ children }: { children: ReactNode }) {
+export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemeName>(DEFAULT_THEME);
 
   useEffect(() => {
@@ -96,11 +97,13 @@ export function useTheme(): ThemeContextValue {
   return ctx;
 }
 
-/** Client-side providers: theme + global reduced-motion respect. */
+/** Client-side providers: motion, theme, and the sandbox ledger store. */
 export function Providers({ children }: { children: ReactNode }) {
   return (
     <MotionConfig reducedMotion="user">
-      <ThemeProvider>{children}</ThemeProvider>
+      <ThemeProvider>
+        <SandboxProvider>{children}</SandboxProvider>
+      </ThemeProvider>
     </MotionConfig>
   );
 }

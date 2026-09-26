@@ -1,15 +1,18 @@
 "use client";
 
-import { ReceiptText, TrendingDown, TrendingUp } from "lucide-react";
+import { ReceiptText, Search, TrendingDown, TrendingUp } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { Container } from "@/components/shell";
 import {
   Amount,
   Badge,
+  Button,
   Card,
   Divider,
   EmptyState,
+  Input,
   Reveal,
+  SandboxBadge,
   SegmentedControl,
   Sheet,
   Surface,
@@ -17,11 +20,14 @@ import {
   type SegmentOption,
 } from "@/components/ui";
 import {
-  getTransactions,
   groupTransactionsByDay,
+  matchesActivityFilter,
+  matchesActivityQuery,
   sumByDirection,
-} from "@/data/mock";
-import { matchesActivityFilter, type ActivityFilter, type Transaction } from "@/domain";
+  type ActivityFilter,
+  type Transaction,
+} from "@/domain";
+import { reasonLabel, useSandbox } from "@/sandbox";
 import { formatDayLabel, formatINR, formatTime } from "@/lib/format";
 
 const FILTERS: readonly SegmentOption<ActivityFilter>[] = [
@@ -33,29 +39,45 @@ const FILTERS: readonly SegmentOption<ActivityFilter>[] = [
 
 /** Activity — filterable ledger of everything that happened. */
 export default function ActivityPage() {
+  const { transactions, cancelRequest } = useSandbox();
   const [filter, setFilter] = useState<ActivityFilter>("all");
+  const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Transaction | null>(null);
 
-  const all = useMemo(() => getTransactions(), []);
   const filtered = useMemo(
-    () => all.filter((tx) => matchesActivityFilter(tx, filter)),
-    [all, filter],
+    () =>
+      transactions.filter(
+        (tx) => matchesActivityFilter(tx, filter) && matchesActivityQuery(tx, query),
+      ),
+    [transactions, filter, query],
   );
   const groups = useMemo(
     () => groupTransactionsByDay(filtered, (iso) => formatDayLabel(iso)),
     [filtered],
   );
-  const monthIn = sumByDirection(all, "in");
-  const monthOut = sumByDirection(all, "out");
+  const monthIn = sumByDirection(transactions, "in");
+  const monthOut = sumByDirection(transactions, "out");
+
+  const handleCancelRequest = () => {
+    if (selected?.requestId) {
+      cancelRequest(selected.requestId);
+      setSelected(null);
+    }
+  };
 
   return (
     <Container width="narrow">
       <div className="flex flex-col gap-6 pt-5 sm:pt-8">
         <Reveal>
-          <h1 className="font-display text-[28px] font-bold tracking-tight text-ink">
-            Activity
-          </h1>
-          <p className="mt-1 text-[15px] text-muted">Everything, in one place.</p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h1 className="font-display text-[28px] font-bold tracking-tight text-ink">
+                Activity
+              </h1>
+              <p className="mt-1 text-[15px] text-muted">Everything, in one place.</p>
+            </div>
+            <SandboxBadge />
+          </div>
         </Reveal>
 
         <Reveal delay={0.05}>
@@ -89,12 +111,22 @@ export default function ActivityPage() {
         </Reveal>
 
         <Reveal>
-          <SegmentedControl
-            label="Filter activity"
-            options={FILTERS}
-            value={filter}
-            onChange={setFilter}
-          />
+          <div className="flex flex-col gap-3">
+            <SegmentedControl
+              label="Filter activity"
+              options={FILTERS}
+              value={filter}
+              onChange={setFilter}
+            />
+            <Input
+              label="Search activity"
+              placeholder="Search title, person, or note…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              startIcon={Search}
+              autoComplete="off"
+            />
+          </div>
         </Reveal>
 
         {groups.length === 0 ? (
@@ -102,12 +134,18 @@ export default function ActivityPage() {
             <EmptyState
               icon={ReceiptText}
               title={
-                filter === "pending" ? "Nothing pending" : "Nothing here yet"
+                query.trim()
+                  ? "No matches"
+                  : filter === "pending"
+                    ? "Nothing pending"
+                    : "Nothing here yet"
               }
               body={
-                filter === "pending"
-                  ? "Every transaction is settled. Nice."
-                  : "Transactions matching this filter will show up here."
+                query.trim()
+                  ? `Nothing matches “${query.trim()}”.`
+                  : filter === "pending"
+                    ? "Every transaction is settled. Nice."
+                    : "Transactions matching this filter will show up here."
               }
             />
           </Card>
@@ -140,6 +178,18 @@ export default function ActivityPage() {
         onClose={() => setSelected(null)}
         title={selected?.title ?? ""}
         description={selected ? formatDayLabel(selected.occurredAt) : undefined}
+        footer={
+          selected?.source === "request" && selected.requestId ? (
+            <div className="flex gap-2.5">
+              <Button variant="secondary" fullWidth onClick={() => setSelected(null)}>
+                Keep waiting
+              </Button>
+              <Button variant="danger" fullWidth onClick={handleCancelRequest}>
+                Cancel request
+              </Button>
+            </div>
+          ) : undefined
+        }
       >
         {selected && (
           <div className="flex flex-col gap-4">
@@ -155,6 +205,16 @@ export default function ActivityPage() {
               </Badge>
             </Surface>
             <dl className="flex flex-col gap-3 text-sm">
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-faint">Type</dt>
+                <dd className="text-right font-medium text-ink">
+                  {selected.source === "request"
+                    ? "Money request"
+                    : selected.reason
+                      ? reasonLabel(selected.reason)
+                      : "Transaction"}
+                </dd>
+              </div>
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-faint">With</dt>
                 <dd className="text-right font-medium text-ink">
@@ -176,13 +236,25 @@ export default function ActivityPage() {
               {selected.note && (
                 <div className="flex items-center justify-between gap-4">
                   <dt className="text-faint">Note</dt>
-                  <dd className="text-right font-medium text-ink">{selected.note}</dd>
+                  <dd className="max-w-[220px] truncate text-right font-medium text-ink">{selected.note}</dd>
                 </div>
               )}
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-faint">Amount</dt>
                 <dd className="tnum text-right font-medium text-ink">
                   {formatINR(selected.amountPaise, { exact: true })}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-faint">Transaction ID</dt>
+                <dd className="tnum max-w-[200px] truncate text-right text-[13px] text-muted">
+                  {selected.id}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-faint">Environment</dt>
+                <dd>
+                  <SandboxBadge />
                 </dd>
               </div>
             </dl>

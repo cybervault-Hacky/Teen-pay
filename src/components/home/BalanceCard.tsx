@@ -2,8 +2,9 @@
 
 import { Eye, EyeOff, TrendingDown, TrendingUp } from "lucide-react";
 import { useState, useSyncExternalStore } from "react";
-import { getTransactions, isSampleData, mockTeen, mockWallet, sumByDirection } from "@/data/mock";
-import { Amount, Badge, Card, IconButton } from "@/components/ui";
+import { sumByDirection } from "@/domain";
+import { useSandbox } from "@/sandbox";
+import { Amount, Card, IconButton, SandboxBadge } from "@/components/ui";
 
 function greetingFor(hour: number): string {
   if (hour < 12) return "Good morning";
@@ -13,9 +14,10 @@ function greetingFor(hour: number): string {
 
 const subscribeToTimeOfDay = () => () => {};
 
-/** Hero balance card — greeting, hideable balance, month in/out. */
+/** Hero balance card — greeting, hideable derived balance, month in/out. */
 export function BalanceCard() {
   const [hidden, setHidden] = useState(false);
+  const { teen, wallet, transactions } = useSandbox();
   // Time-based greeting without hydration mismatch: stable "Hello" on the
   // server, local time on the client.
   const greeting = useSyncExternalStore(
@@ -23,9 +25,8 @@ export function BalanceCard() {
     () => greetingFor(new Date().getHours()),
     () => "Hello",
   );
-  const firstName = mockTeen.displayName.split(" ")[0];
+  const firstName = teen.displayName.split(" ")[0];
 
-  const transactions = getTransactions();
   const monthIn = sumByDirection(transactions, "in");
   const monthOut = sumByDirection(transactions, "out");
 
@@ -63,7 +64,7 @@ export function BalanceCard() {
             ••••
           </p>
         ) : (
-          <Amount value={mockWallet.availablePaise} size="display" />
+          <Amount value={wallet.availablePaise} size="display" />
         )}
       </div>
 
@@ -80,7 +81,7 @@ export function BalanceCard() {
             <span className="text-faint">out</span>
           </span>
         </div>
-        {isSampleData() && <Badge tone="neutral">Sample data</Badge>}
+        <SandboxBadge />
       </div>
     </Card>
   );

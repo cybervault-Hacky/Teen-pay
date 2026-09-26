@@ -40,6 +40,8 @@ export function Sheet({ open, onClose, title, description, children, footer }: S
 
   useEffect(() => {
     if (!open) return;
+    // Restore focus to whatever opened the sheet once it closes.
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.addEventListener("keydown", handleKey);
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -47,6 +49,7 @@ export function Sheet({ open, onClose, title, description, children, footer }: S
     return () => {
       document.removeEventListener("keydown", handleKey);
       document.body.style.overflow = previous;
+      opener?.focus();
     };
   }, [open, handleKey]);
 

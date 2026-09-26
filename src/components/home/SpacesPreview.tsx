@@ -1,8 +1,10 @@
+"use client";
+
 import Link from "next/link";
 import { CalendarClock, Coins, PiggyBank, Target, type LucideIcon } from "lucide-react";
-import { mockWallet } from "@/data/mock";
 import type { SpaceType } from "@/domain";
 import { spaceShare } from "@/domain";
+import { useSandbox } from "@/sandbox";
 import { Amount, SectionHeader } from "@/components/ui";
 
 const spaceIcons: Record<SpaceType, LucideIcon> = {
@@ -14,16 +16,17 @@ const spaceIcons: Record<SpaceType, LucideIcon> = {
 
 /** Compact Money Spaces strip — scrolls on mobile, grids on desktop. */
 export function SpacesPreview() {
+  const { wallet } = useSandbox();
   const spaces = [
-    { ...mockWallet.spaces.spend, upcoming: false },
-    { ...mockWallet.spaces.save, upcoming: false },
-    { ...mockWallet.spaces.goals, upcoming: false },
+    { ...wallet.spaces.spend, upcoming: false },
+    { ...wallet.spaces.save, upcoming: false },
+    { ...wallet.spaces.goals, upcoming: false },
     {
       type: "upcoming" as const,
       label: "Upcoming",
       description: "On its way to you.",
-      balancePaise: mockWallet.upcomingPaise,
-      currency: mockWallet.currency,
+      balancePaise: wallet.upcomingPaise,
+      currency: wallet.currency,
       upcoming: true,
     },
   ];
@@ -41,7 +44,7 @@ export function SpacesPreview() {
       >
         {spaces.map((space) => {
           const Icon = spaceIcons[space.type];
-          const share = spaceShare(space.balancePaise, mockWallet.availablePaise);
+          const share = spaceShare(space.balancePaise, wallet.availablePaise);
           return (
             <Link
               key={space.type}

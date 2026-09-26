@@ -3,14 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV_ITEMS, isNavActive } from "@/design/navigation";
-import { mockHousehold, mockTeen } from "@/data/mock";
+import { useSandbox } from "@/sandbox";
 import { AppLogo, Avatar } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
 /** Desktop sidebar — same model as the bottom bar, roomier treatment. */
 export function SideNav() {
   const pathname = usePathname();
-  const parent = mockHousehold.parents[0];
+  const { teen, parent } = useSandbox();
 
   return (
     <nav
@@ -56,10 +56,10 @@ export function SideNav() {
           href="/profile"
           className="flex items-center gap-3 rounded-2xl border border-line bg-surface p-3 transition-colors hover:bg-surface-2"
         >
-          <Avatar name={mockTeen.displayName} size="sm" />
+          <Avatar name={teen.displayName} size="sm" />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium text-ink">
-              {mockTeen.displayName}
+              {teen.displayName}
             </span>
             <span className="block truncate text-xs text-faint">
               {parent ? `Family · ${parent.displayName}` : "Teen account"}

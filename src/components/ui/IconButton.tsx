@@ -4,9 +4,14 @@ import { motion } from "framer-motion";
 import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 import { pressable, transitionFast } from "@/design/motion";
 import { cn } from "@/lib/cn";
+import { iconButtonClassName } from "./iconButtonStyles";
+import type { IconButtonSize, IconButtonVariant } from "./iconButtonStyles";
 
-export type IconButtonVariant = "subtle" | "ghost" | "outline" | "accent";
-export type IconButtonSize = "sm" | "md" | "lg";
+export type {
+  IconButtonSize,
+  IconButtonStyleOptions,
+  IconButtonVariant,
+} from "./iconButtonStyles";
 
 export interface IconButtonProps
   extends Omit<
@@ -20,19 +25,6 @@ export interface IconButtonProps
   children: ReactNode;
   ref?: Ref<HTMLButtonElement>;
 }
-
-const variantStyles: Record<IconButtonVariant, string> = {
-  subtle: "bg-surface-2 text-muted hover:text-ink hover:bg-surface-3",
-  ghost: "text-muted hover:text-ink hover:bg-surface-2",
-  outline: "border border-line-strong text-muted hover:text-ink hover:bg-surface-2",
-  accent: "bg-accent-soft text-accent border border-accent-line hover:bg-accent/20",
-};
-
-const sizeStyles: Record<IconButtonSize, string> = {
-  sm: "size-8 rounded-lg [&_svg]:size-4",
-  md: "size-10 rounded-xl [&_svg]:size-5",
-  lg: "size-12 rounded-2xl [&_svg]:size-6",
-};
 
 export function IconButton({
   label,
@@ -54,10 +46,8 @@ export function IconButton({
       whileTap={disabled ? undefined : pressable.whileTap}
       transition={transitionFast}
       className={cn(
-        "inline-flex cursor-pointer items-center justify-center transition-colors duration-150 select-none disabled:cursor-not-allowed disabled:opacity-50",
-        variantStyles[variant],
-        sizeStyles[size],
-        className,
+        iconButtonClassName({ variant, size, className }),
+        "disabled:cursor-not-allowed disabled:opacity-50",
       )}
       {...rest}
     >

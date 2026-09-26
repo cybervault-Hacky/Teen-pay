@@ -2,7 +2,7 @@
   "name": "teen-pay",
   "version": "0.1.0",
   "private": true,
-  "description": "TeenPay — a premium teen-focused money platform. Phase 1: product foundation & design system.",
+  "description": "TeenPay — a premium teen-focused money platform. Phase 2: interactive sandbox ledger.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

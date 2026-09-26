@@ -1,13 +1,16 @@
+"use client";
+
 import Link from "next/link";
 import { Target } from "lucide-react";
-import { mockGoals } from "@/data/mock";
 import { goalProgress } from "@/domain";
+import { useSandbox } from "@/sandbox";
 import { formatPercent } from "@/lib/format";
 import { Amount, Card, ProgressBar, SectionHeader } from "@/components/ui";
 
 /** First savings goal at a glance. */
 export function GoalPreview() {
-  const goal = mockGoals[0];
+  const { goals } = useSandbox();
+  const goal = goals[0];
   if (!goal) return null;
   const progress = goalProgress(goal);
 

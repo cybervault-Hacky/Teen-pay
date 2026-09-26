@@ -19,15 +19,7 @@ interface QuickAction {
 
 const ACTIONS: readonly QuickAction[] = [
   { id: "pay", label: "Pay", icon: ArrowUpRight, href: "/pay", primary: true },
-  {
-    id: "request",
-    label: "Request",
-    icon: ArrowDownLeft,
-    sheet: {
-      feature: "Request money",
-      body: "Ask a parent or friend for money with a note.",
-    },
-  },
+  { id: "request", label: "Request", icon: ArrowDownLeft, href: "/pay?mode=request" },
   { id: "move", label: "Move", icon: ArrowLeftRight, href: "/money" },
   {
     id: "split",
