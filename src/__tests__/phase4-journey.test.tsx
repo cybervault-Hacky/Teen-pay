@@ -110,7 +110,8 @@ describe("Phase 4 journey", () => {
     await go("/parent");
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /edit rules/i })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /set schedule/i })).toBeInTheDocument();
+    // Phase 7: the schedule preview became "Create pocket money".
+    expect(await screen.findByRole("button", { name: /create pocket money/i })).toBeInTheDocument();
 
     // 9. Daily limit ₹500, approvals above ₹500.
     await user.click(await screen.findByRole("button", { name: /edit rules/i }));

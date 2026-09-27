@@ -18,6 +18,7 @@ export * from "./recipient";
 export * from "./request";
 export * from "./ledger";
 export * from "./safety";
+export * from "./allowance";
 export * from "./approval";
 export * from "./events";
 export * from "./notification";

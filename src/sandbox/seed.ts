@@ -301,6 +301,9 @@ export function buildSeedDatabase(): SandboxDatabase {
     ledger: journal.ledger,
     operations: journal.operations,
     spaces: journal.spaces,
+    // The seed family starts unlinked, so there's no pocket money
+    // schedule yet — one needs a linked parent.
+    pocketMoneySchedules: [],
     teenRecords: [
       {
         teenId: SEED_TEEN_ID,

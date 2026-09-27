@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   disconnectTransition,
-  setAllowanceScheduleTransition,
   updateGuardianNotificationsTransition,
   updateSpendingRulesTransition,
 } from "@/sandbox/family-transitions";
-import { databaseFromState, isSandboxDatabase, migrateV1, migrateV3, migrateV4 } from "@/sandbox/persistence";
+import { databaseFromState, isSandboxDatabase, migrateV1, migrateV3, migrateV4, migrateV5 } from "@/sandbox/persistence";
 import {
   describeScheduleCadence,
   evaluatePayment,
@@ -15,6 +14,7 @@ import {
 } from "@/sandbox/rules";
 import { buildSeedState, SEED_PARENT_ID, SEED_SAVE_SPACE_ID, SEED_TEEN_ID } from "@/sandbox/seed";
 import { moveSpaceMoneyTransition } from "@/sandbox/space-transitions";
+import { createPocketMoneyScheduleTransition } from "@/sandbox/allowance-transitions";
 import {
   cancelApprovalTransition,
   decideApprovalTransition,
@@ -398,31 +398,62 @@ describe("allowance — one-time and schedule", () => {
     expect(balance(again.state)).toBe(SEED_BALANCE + 500);
   });
 
+  // Phase 7: the preview became a real schedule. Same guarantees
+  // (cadence copy, next date, notification, nothing moves on save),
+  // now asserted on the stored schedule record.
   it("stores a weekly schedule and previews the next date", () => {
-    const schedule = { amount: 500, frequency: "weekly" as const, weekday: 1, dayOfMonth: 1 };
-    const s = must(setAllowanceScheduleTransition(linkedState(), { ...PARENT, teenId: SEED_TEEN_ID, schedule }));
-    expect(s.family.controls[0]?.allowance).toEqual(schedule);
-    expect(describeScheduleCadence(schedule)).toBe("Every Monday");
+    const cadence = { frequency: "weekly" as const, dayOfWeek: 1, dayOfMonth: 1 };
+    const out = createPocketMoneyScheduleTransition(linkedState(), {
+      ...PARENT,
+      scheduleId: "pms_weekly",
+      teenId: SEED_TEEN_ID,
+      amount: 500,
+      ...cadence,
+      startDate: "2026-09-26",
+    });
+    expect(out.result.ok).toBe(true);
+    if (!out.result.ok) return;
+    const s = out.state;
+    expect(s.schedules[0]).toMatchObject({
+      id: "pms_weekly",
+      amount: 500,
+      frequency: "weekly",
+      dayOfWeek: 1,
+      status: "active",
+      parentAccountId: SEED_PARENT_ID,
+      teenAccountId: SEED_TEEN_ID,
+      version: 1,
+      runs: [],
+    });
+    expect(describeScheduleCadence(cadence)).toBe("Every Monday");
     // 26 Sep 2026 is a Saturday → next Monday is 28 Sep.
-    expect(nextAllowanceDate(schedule, AT)).toBe("2026-09-28");
+    expect(nextAllowanceDate(cadence, AT)).toBe("2026-09-28");
+    expect(out.result.value.nextOccurrence).toBe("2026-09-28");
     // Scheduling moves no money.
     expect(balance(s)).toBe(SEED_BALANCE);
+    expect(s.ledger).toEqual(linkedState().ledger);
     expect(s.notifications[0]?.title).toBe("Pocket money scheduled");
   });
 
   it("monthly schedule preview", () => {
-    const schedule = { amount: 1000, frequency: "monthly" as const, weekday: 1, dayOfMonth: 1 };
-    expect(nextAllowanceDate(schedule, AT)).toBe("2026-10-01");
-    expect(describeScheduleCadence(schedule)).toBe("On the 1st of every month");
+    const cadence = { frequency: "monthly" as const, dayOfWeek: 1, dayOfMonth: 1 };
+    expect(nextAllowanceDate(cadence, AT)).toBe("2026-10-01");
+    expect(describeScheduleCadence(cadence)).toBe("On the 1st of every month");
   });
 
   it("rejects invalid schedules", () => {
-    const out = setAllowanceScheduleTransition(linkedState(), {
+    const out = createPocketMoneyScheduleTransition(linkedState(), {
       ...PARENT,
+      scheduleId: "pms_bad",
       teenId: SEED_TEEN_ID,
-      schedule: { amount: 500, frequency: "monthly", weekday: 1, dayOfMonth: 31 },
+      amount: 500,
+      frequency: "monthly",
+      dayOfWeek: 1,
+      dayOfMonth: 31,
+      startDate: "2026-09-26",
     });
     expect(out.result.ok).toBe(false);
+    expect(out.state.schedules).toHaveLength(0);
   });
 });
 
@@ -490,9 +521,9 @@ describe("persistence — schema v3", () => {
       goals: LEGACY_SEED_GOALS,
       family: { teen: {}, parent: {}, familyName: "Sharma family" },
     };
-    // Phase 6: v1 → v3 → v4 → v5.
-    const migrated = migrateV4(
-      migrateV3(migrateV1(JSON.parse(JSON.stringify(v1)), buildSeedState)),
+    // Phase 7: v1 → v3 → v4 → v5 → v6.
+    const migrated = migrateV5(
+      migrateV4(migrateV3(migrateV1(JSON.parse(JSON.stringify(v1)), buildSeedState)), AT),
       AT,
     );
     expect(isSandboxDatabase(JSON.parse(JSON.stringify(migrated)))).toBe(true);

@@ -22,7 +22,7 @@ export type LoadOutcome =
   | { kind: "fresh" }
   | { kind: "loaded" }
   /** Older data was upgraded; the original was backed up first. */
-  | { kind: "migrated"; from: 1 | 2 | 3 | 4 }
+  | { kind: "migrated"; from: 1 | 2 | 3 | 4 | 5 }
   /** Stored data couldn't be read; it was backed up and the seed used. */
   | { kind: "recovered" }
   /** Storage isn't available (private mode, disabled) — memory only. */
@@ -136,7 +136,9 @@ export function createMemoryRepository(initial?: SandboxDatabase): SandboxReposi
 export function describeLoadOutcome(outcome: LoadOutcome): string | null {
   switch (outcome.kind) {
     case "migrated":
-      return outcome.from === 4
+      return outcome.from === 5
+        ? "Your sandbox data was upgraded for recurring pocket money — every balance and transaction was kept."
+        : outcome.from === 4
         ? "Your sandbox data was upgraded to add Money Spaces — every balance and transaction was kept."
         : outcome.from === 3
           ? "Your sandbox data was upgraded to the new wallet format — nothing was lost."

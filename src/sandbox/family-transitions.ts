@@ -4,7 +4,6 @@ import {
   defaultGuardianControls,
   isInviteExpired,
   normalizeInviteCode,
-  type AllowanceSchedule,
   type ApprovalRequest,
   type ApprovalRule,
   type DomainEvent,
@@ -18,7 +17,8 @@ import {
 import { authorize } from "./authorization";
 import { commitEvents } from "./events";
 import { linkFor } from "./identity";
-import { validateAllowanceSchedule, validateSpendingRules } from "./rules";
+import { stopSchedulesOnDisconnect } from "./allowance-transitions";
+import { validateSpendingRules } from "./rules";
 import {
   fail,
   isError,
@@ -447,6 +447,11 @@ export function disconnectTransition(
   next = withFamily(next, {
     controls: next.family.controls.filter((c) => c.teenId !== input.teenId),
   });
+  // Pocket money belongs to the relationship: every open schedule
+  // between these two stops for good (history kept, nothing moves).
+  const stopped = stopSchedulesOnDisconnect(next, input.teenId, guardianId, actorId, at);
+  next = stopped.state;
+  events.push(...stopped.events);
   events.push({
     id: `evt_unlink_${input.teenId}_${guardianId}_${at}`,
     type: "family_unlinked",
@@ -454,7 +459,7 @@ export function disconnectTransition(
     at,
     teenId: input.teenId,
     guardianId,
-    cancelledApprovals: events.length,
+    cancelledApprovals: events.filter((e) => e.type === "approval_cancelled").length,
   });
   return ok(commitEvents(next, events));
 }
@@ -564,45 +569,6 @@ export function updateGuardianNotificationsTransition(
         at,
         teenId: input.teenId,
         notifications,
-      },
-    ]),
-  );
-}
-
-export function setAllowanceScheduleTransition(
-  state: SandboxState,
-  input: ActionContext & {
-    teenId: string;
-    schedule: AllowanceSchedule | null;
-  },
-): TransitionOutput {
-  const { actorId, at } = resolveContext(state, input);
-  const denied = authorize(state, actorId, "allowance.schedule", { teenId: input.teenId });
-  if (denied) return fail(state, denied);
-  if (input.schedule) {
-    const invalid = validateAllowanceSchedule(input.schedule);
-    if (invalid) return fail(state, invalid);
-  }
-  const current = controlsFor(state, input.teenId);
-  if (!current) return fail(state, { code: "not_linked", message: "Family controls aren't active." });
-  if (current.allowance === null && input.schedule === null) return ok(state);
-
-  const schedule = input.schedule ? { ...input.schedule } : null;
-  const next = updateControls(state, input.teenId, (c) => ({
-    ...c,
-    allowance: schedule,
-    updatedAt: at,
-    updatedBy: actorId,
-  }));
-  return ok(
-    commitEvents(next, [
-      {
-        id: `evt_sched_${input.teenId}_${at}`,
-        type: "allowance_schedule_updated",
-        actorId,
-        at,
-        teenId: input.teenId,
-        schedule,
       },
     ]),
   );

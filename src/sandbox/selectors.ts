@@ -1,9 +1,15 @@
 import {
   deadlineInfo,
+  describePocketMoneyCadence,
   isInviteExpired,
+  isOpenSchedule,
+  nextOccurrenceOf,
   productDay,
+  SCHEDULE_STATUS_LABEL,
   spaceProgress,
   type DeadlineInfo,
+  type PocketMoneyRun,
+  type PocketMoneySchedule,
   type SpaceProgress,
 } from "@/domain";
 import type {
@@ -166,7 +172,13 @@ function titleFor(state: SandboxState, entry: LedgerEntry): string {
     case "refund":
       return `Refund from ${entry.counterparty.name}`;
     case "allowance_debit":
-      return `Pocket money to ${entry.counterparty.name}`;
+      return entry.scheduleId
+        ? `Scheduled pocket money to ${entry.counterparty.name}`
+        : `Pocket money to ${entry.counterparty.name}`;
+    case "allowance_credit":
+      // Scheduled pocket money reads as what it is; one-off pocket
+      // money keeps its original title.
+      return entry.scheduleId ? "Pocket money received" : TYPE_LABELS[entry.type];
     default:
       return TYPE_LABELS[entry.type];
   }
@@ -182,7 +194,7 @@ function subtitleFor(entry: LedgerEntry): string {
     case "reversal":
       return entry.description;
     default:
-      return `${entry.direction === "credit" ? "From" : "To"} ${entry.counterparty.name}`;
+      return `${entry.scheduleId ? "Scheduled · " : ""}${entry.direction === "credit" ? "From" : "To"} ${entry.counterparty.name}`;
   }
 }
 
@@ -271,6 +283,7 @@ export function getTransaction(state: SandboxState, entryId: string): Transactio
       : {}),
     ...(original ? { compensates: original.reference } : {}),
     ...(space ? { space: { id: space.id, name: space.name, archived: space.status === "archived" } } : {}),
+    ...(entry.scheduledFor ? { scheduledFor: entry.scheduledFor } : {}),
     compensatedBy: state.ledger
       .filter(
         (e) =>
@@ -616,4 +629,152 @@ export function selectLastAllowance(state: SandboxState): LedgerEntry | null {
   return teenEntries(state)
     .filter((entry) => entry.type === "allowance_credit")
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
+}
+
+// ── Pocket Money Autopilot ───────────────────────────────────────
+//
+// Schedules are plans; every rupee figure below is read from the
+// ledger (scheduled allowance entries), never from a schedule.
+
+export interface PocketMoneySummary {
+  schedule: PocketMoneySchedule;
+  teenName: string;
+  parentName: string;
+  /** "Every Monday" / "On the 1st of every month". */
+  cadence: string;
+  statusLabel: string;
+  /** YYYY-MM-DD, or null (paused, completed, cancelled). */
+  nextOccurrence: string | null;
+  totalRuns: number;
+  successes: number;
+  failures: number;
+  /** Rupees actually moved by this schedule (from the ledger). */
+  totalPaid: number;
+  lastRun: PocketMoneyRun | null;
+}
+
+function byNewestRun(a: PocketMoneyRun, b: PocketMoneyRun): number {
+  return b.occurrence.localeCompare(a.occurrence) || b.at.localeCompare(a.at);
+}
+
+/** Schedules the account pays (in this scope). */
+export function selectSchedulesForParent(state: SandboxState, parentId: string): PocketMoneySchedule[] {
+  return state.schedules
+    .filter((s) => s.parentAccountId === parentId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** Schedules paying the teen (in this scope). */
+export function selectSchedulesForTeen(state: SandboxState, teenId: string): PocketMoneySchedule[] {
+  return state.schedules
+    .filter((s) => s.teenAccountId === teenId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export function selectActiveSchedules(state: SandboxState): PocketMoneySchedule[] {
+  return state.schedules.filter((s) => s.status === "active");
+}
+
+export function selectPausedSchedules(state: SandboxState): PocketMoneySchedule[] {
+  return state.schedules.filter((s) => s.status === "paused");
+}
+
+/** The open (active or paused) schedule between a parent and a teen. */
+export function selectOpenSchedule(
+  state: SandboxState,
+  parentId: string,
+  teenId: string,
+): PocketMoneySchedule | null {
+  return (
+    state.schedules.find(
+      (s) => s.parentAccountId === parentId && s.teenAccountId === teenId && isOpenSchedule(s),
+    ) ?? null
+  );
+}
+
+/** Upcoming occurrences of active schedules, soonest first. */
+export function selectUpcomingPocketMoney(
+  state: SandboxState,
+  options: { teenId?: string; parentId?: string } = {},
+): { schedule: PocketMoneySchedule; occurrence: string }[] {
+  return state.schedules
+    .filter(
+      (s) =>
+        s.status === "active" &&
+        s.nextRunAt !== null &&
+        (options.teenId === undefined || s.teenAccountId === options.teenId) &&
+        (options.parentId === undefined || s.parentAccountId === options.parentId),
+    )
+    .sort((a, b) => a.nextRunAt!.localeCompare(b.nextRunAt!))
+    .map((schedule) => ({ schedule, occurrence: nextOccurrenceOf(schedule)! }));
+}
+
+/** The next pocket money a teen will get, if any is scheduled. */
+export function selectNextPocketMoney(
+  state: SandboxState,
+  teenId: string,
+): { schedule: PocketMoneySchedule; occurrence: string } | null {
+  return selectUpcomingPocketMoney(state, { teenId })[0] ?? null;
+}
+
+/** Scheduled allowance entries of one schedule, in this scope. */
+function scheduleEntries(state: SandboxState, scheduleId: string, direction: "credit" | "debit"): LedgerEntry[] {
+  return state.ledger.filter((e) => e.scheduleId === scheduleId && e.direction === direction);
+}
+
+export function selectScheduleSummary(state: SandboxState, scheduleId: string): PocketMoneySummary | null {
+  const schedule = state.schedules.find((s) => s.id === scheduleId);
+  if (!schedule) return null;
+  const runs = [...schedule.runs].sort(byNewestRun);
+  // Either side of the transfer proves it; use whichever is in scope.
+  const paid = scheduleEntries(state, schedule.id, "credit");
+  return {
+    schedule,
+    teenName: findUser(state, schedule.teenAccountId)?.displayName ?? "Teen",
+    parentName: findUser(state, schedule.parentAccountId)?.displayName ?? "Parent",
+    cadence: describePocketMoneyCadence(schedule),
+    statusLabel: SCHEDULE_STATUS_LABEL[schedule.status],
+    nextOccurrence: nextOccurrenceOf(schedule),
+    totalRuns: runs.length,
+    successes: runs.filter((r) => r.status === "completed").length,
+    failures: runs.filter((r) => r.status === "failed").length,
+    totalPaid: paid.reduce((sum, e) => sum + e.amount, 0),
+    lastRun: runs[0] ?? null,
+  };
+}
+
+/** One schedule's processed occurrences, newest first. */
+export function selectScheduleHistory(state: SandboxState, scheduleId: string): PocketMoneyRun[] {
+  const schedule = state.schedules.find((s) => s.id === scheduleId);
+  return schedule ? [...schedule.runs].sort(byNewestRun) : [];
+}
+
+/** Every processed occurrence across the account's schedules, newest first. */
+export function selectPocketMoneyExecutions(
+  state: SandboxState,
+  accountId: string,
+): (PocketMoneyRun & { schedule: PocketMoneySchedule })[] {
+  return state.schedules
+    .filter((s) => s.parentAccountId === accountId || s.teenAccountId === accountId)
+    .flatMap((schedule) => schedule.runs.map((run) => ({ ...run, schedule })))
+    .sort(byNewestRun);
+}
+
+/**
+ * Scheduled pocket money moved, from the ledger: `received` into the
+ * account's wallets, `sent` out of them.
+ */
+export function selectPocketMoneyTotals(
+  state: SandboxState,
+  accountId: string,
+): { received: number; sent: number } {
+  const owned = new Set(walletsOwnedBy(state.wallets, accountId).map((w) => w.id));
+  let received = 0;
+  let sent = 0;
+  for (const e of state.ledger) {
+    if (!e.scheduleId || !owned.has(e.walletId)) continue;
+    if (e.type === "allowance_credit") received += e.amount;
+    if (e.type === "allowance_debit") sent += e.amount;
+  }
+  return { received, sent };
 }

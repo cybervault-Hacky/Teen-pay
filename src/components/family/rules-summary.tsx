@@ -2,16 +2,13 @@
 
 import {
   Bell,
-  CalendarClock,
   Gauge,
   ReceiptText,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 import { formatINR } from "@/lib/currency";
-import { formatDateKey } from "@/lib/format";
 import { summarizeGuardianNotifications } from "@/sandbox/events";
-import { describeScheduleCadence, nextAllowanceDate } from "@/sandbox/rules";
 import { selectControls, selectSpendingStatus } from "@/sandbox/selectors";
 import { useSandbox } from "@/sandbox/store";
 import { Card } from "@/components/ui/card";
@@ -56,6 +53,7 @@ interface RulesSummaryProps {
 export function RulesSummary({ teenId, perspective }: RulesSummaryProps) {
   const { state } = useSandbox();
   const now = new Date().toISOString();
+  // Pocket money has its own section (a schedule, not a rule).
   const controls = selectControls(state, teenId);
   const status = selectSpendingStatus(state, teenId, now);
   const guardianName = status.guardian?.displayName ?? "your guardian";
@@ -64,7 +62,6 @@ export function RulesSummary({ teenId, perspective }: RulesSummaryProps) {
 
   const daily = status.dailyLimit;
   const spentPercent = daily ? (status.todaySpent / daily) * 100 : 0;
-  const schedule = controls.allowance;
 
   return (
     <Card>
@@ -110,22 +107,6 @@ export function RulesSummary({ teenId, perspective }: RulesSummaryProps) {
                 : `You approve payments above ${formatINR(status.approvalThreshold)}`
           }
         />
-        <RuleRow
-          icon={CalendarClock}
-          title="Pocket money"
-          value={
-            schedule
-              ? `${formatINR(schedule.amount)} · ${describeScheduleCadence(schedule)}`
-              : "No schedule set"
-          }
-        >
-          {schedule && (
-            <p className="mt-1 text-xs text-ink-muted">
-              Next: {formatDateKey(nextAllowanceDate(schedule, now))} · sandbox
-              preview, nothing sends automatically
-            </p>
-          )}
-        </RuleRow>
         <RuleRow
           icon={Bell}
           title={perspective === "teen" ? `${guardianName} is notified about` : "You're notified about"}

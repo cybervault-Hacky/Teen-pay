@@ -1,6 +1,8 @@
 import {
+  describePocketMoneyCadence,
   isFamilyEvent,
   type AppNotification,
+  type LegacyAllowancePreview,
   type ApprovalRule,
   type DomainEvent,
   type GuardianNotificationSettings,
@@ -9,7 +11,6 @@ import {
 } from "@/domain";
 import { formatINR } from "@/lib/currency";
 import { activeControls, findUser } from "./identity";
-import { describeScheduleCadence } from "./rules";
 import { FAMILY_EVENT_LOG_LIMIT, type SandboxState } from "./types";
 
 /**
@@ -26,6 +27,58 @@ import { FAMILY_EVENT_LOG_LIMIT, type SandboxState } from "./types";
 
 function nameOf(state: SandboxState, userId: string): string {
   return findUser(state, userId)?.displayName ?? "Someone";
+}
+
+/** The Phase 3 preview's cadence, in today's cadence shape. */
+function legacyCadence(preview: LegacyAllowancePreview): string {
+  return describePocketMoneyCadence({
+    frequency: preview.frequency,
+    dayOfWeek: preview.weekday,
+    dayOfMonth: preview.dayOfMonth,
+  });
+}
+
+type ScheduleChanged = Extract<DomainEvent, { type: "pocket_money_schedule_changed" }>;
+
+function planText(event: ScheduleChanged): string {
+  return `${formatINR(event.amount)} · ${describePocketMoneyCadence(event)}`;
+}
+
+/**
+ * Pocket money notifications. The parent hears about pausing,
+ * resuming and completion; the teen about anything that changes what
+ * they'll receive. Stopping on disconnect is announced by the
+ * disconnect itself, so it adds nothing.
+ */
+function scheduleDrafts(state: SandboxState, event: ScheduleChanged): Draft[] {
+  const parent = nameOf(state, event.guardianId);
+  const teen = nameOf(state, event.teenId);
+  const plan = planText(event);
+  switch (event.change) {
+    case "created":
+      return [{ to: event.teenId, kind: "money", title: "Pocket money scheduled", body: `${plan} from ${parent}.` }];
+    case "updated":
+      return [{ to: event.teenId, kind: "money", title: "Pocket money updated", body: `Now ${plan} from ${parent}.` }];
+    case "paused":
+      return [
+        { to: event.guardianId, kind: "money", title: "Pocket money paused", body: `${plan} to ${teen}. Nothing is sent until you resume.` },
+        { to: event.teenId, kind: "money", title: "Pocket money paused", body: `${parent} paused your ${formatINR(event.amount)} pocket money.` },
+      ];
+    case "resumed":
+      return [
+        { to: event.guardianId, kind: "money", title: "Pocket money resumed", body: `${plan} to ${teen}, from the next transfer day.` },
+        { to: event.teenId, kind: "money", title: "Pocket money resumed", body: `${plan} from ${parent}.` },
+      ];
+    case "cancelled":
+      return event.endedReason === "family_disconnected"
+        ? []
+        : [{ to: event.teenId, kind: "money", title: "Pocket money stopped", body: `${parent} cancelled ${plan}. Past pocket money stays in your history.` }];
+    case "completed":
+      return [
+        { to: event.guardianId, kind: "money", title: "Schedule completed", body: `The last ${formatINR(event.amount)} pocket money to ${teen} was processed.` },
+        { to: event.teenId, kind: "money", title: "Schedule completed", body: `Your ${formatINR(event.amount)} pocket money from ${parent} has finished.` },
+      ];
+  }
 }
 
 /** "Daily limit ₹500 · Up to ₹1,000 per payment · Approval above ₹500" */
@@ -263,16 +316,39 @@ function drafts(state: SandboxState, event: DomainEvent): Draft[] {
         },
       ];
     case "allowance_schedule_updated":
+      // Legacy preview events are never emitted any more.
+      return [];
+    case "pocket_money_schedule_changed":
+      return scheduleDrafts(state, event);
+    case "pocket_money_paid":
       return [
+        {
+          to: event.guardianId,
+          kind: "money",
+          title: "Pocket money sent",
+          body: `${formatINR(event.amount)} to ${nameOf(state, event.teenId)} · ${event.reference}.`,
+        },
         {
           to: event.teenId,
           kind: "money",
-          title: event.schedule
-            ? "Pocket money scheduled"
-            : "Pocket money schedule removed",
-          body: event.schedule
-            ? `${formatINR(event.schedule.amount)} · ${describeScheduleCadence(event.schedule)} (sandbox preview).`
-            : `${nameOf(state, event.actorId)} removed the recurring pocket money preview.`,
+          title: "Pocket money received",
+          body: `${formatINR(event.amount)} from ${nameOf(state, event.guardianId)} · ${event.reference}.`,
+        },
+      ];
+    case "pocket_money_failed":
+      return [
+        {
+          to: event.guardianId,
+          kind: "money",
+          title: "Pocket money not sent",
+          body: event.message,
+        },
+        {
+          // The reason stays private (it may be about the parent's balance).
+          to: event.teenId,
+          kind: "money",
+          title: "Pocket money didn't arrive",
+          body: `The ${formatINR(event.amount)} from ${nameOf(state, event.guardianId)} wasn't sent this time.`,
         },
       ];
     case "approval_requested": {
@@ -410,9 +486,29 @@ export function describeFamilyEvent(
       return {
         title: event.schedule ? "Pocket money scheduled" : "Schedule removed",
         detail: event.schedule
-          ? `${formatINR(event.schedule.amount)} · ${describeScheduleCadence(event.schedule)}`
+          ? `${formatINR(event.schedule.amount)} · ${legacyCadence(event.schedule)}`
           : "Recurring pocket money preview removed",
       };
+    case "pocket_money_schedule_changed": {
+      const titles = {
+        created: "Pocket money scheduled",
+        updated: "Pocket money updated",
+        paused: "Pocket money paused",
+        resumed: "Pocket money resumed",
+        cancelled:
+          event.endedReason === "family_disconnected"
+            ? "Pocket money stopped"
+            : "Pocket money cancelled",
+        completed: "Schedule completed",
+      } as const;
+      return {
+        title: titles[event.change],
+        detail:
+          event.change === "cancelled" && event.endedReason === "family_disconnected"
+            ? `${planText(event)} · family disconnected`
+            : planText(event),
+      };
+    }
     case "approval_requested":
       return {
         title: "Approval requested",

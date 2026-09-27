@@ -95,6 +95,12 @@ export interface LedgerEntry {
   approvalId?: string;
   /** For refunds and reversals: the entry being compensated. */
   relatedEntryId?: string;
+  /**
+   * Scheduled pocket money (allowance entries only): the schedule and
+   * the occurrence day (YYYY-MM-DD) this entry paid.
+   */
+  scheduleId?: string;
+  scheduledFor?: string;
   /** ISO 8601 timestamp. */
   createdAt: string;
   /** The account whose action wrote the entry. */
@@ -151,6 +157,12 @@ export interface MoneyOperation {
   requestId?: string;
   /** For refunds/reversals: the operation being compensated. */
   relatedOperationId?: string;
+  /**
+   * Scheduled pocket money: the schedule and occurrence day. The
+   * operation id is then the execution id `scheduleId:YYYY-MM-DD`.
+   */
+  scheduleId?: string;
+  scheduledFor?: string;
 }
 
 /** Reference prefixes, one per operation type. */

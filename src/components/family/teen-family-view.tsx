@@ -11,6 +11,7 @@ import {
   selectLink,
   selectLinkedGuardian,
   selectPendingApprovals,
+  selectSchedulesForTeen,
   selectTeen,
 } from "@/sandbox/selectors";
 import { useSandbox } from "@/sandbox/store";
@@ -23,6 +24,7 @@ import { TeenApprovalCard } from "./approval-cards";
 import { DisconnectDialog } from "./disconnect-dialog";
 import { FamilyActivity } from "./family-activity";
 import { RulesSummary } from "./rules-summary";
+import { TeenPocketMoney } from "@/components/pocket-money/teen-pocket-money";
 
 /**
  * The teen's Family screen: connection state, who's in the family,
@@ -247,6 +249,13 @@ export function TeenFamilyView() {
             These are the only rules on your money. When {guardian?.displayName ?? "your guardian"}{" "}
             changes one, you&apos;ll get a notification.
           </p>
+        </section>
+      )}
+
+      {(status === "linked" || selectSchedulesForTeen(state, teen.id).length > 0) && (
+        <section aria-label="Pocket money">
+          <SectionHeader title="Pocket money" />
+          <TeenPocketMoney teenId={teen.id} />
         </section>
       )}
 

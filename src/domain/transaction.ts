@@ -46,6 +46,8 @@ export interface TransactionDetails extends Transaction {
   compensates?: string;
   /** For Money Space moves, when the viewer owns the Space. */
   space?: { id: string; name: string; archived: boolean };
+  /** Scheduled pocket money: the occurrence day it paid (YYYY-MM-DD). */
+  scheduledFor?: string;
   /** Refunds/reversals recorded against this entry. */
   compensatedBy: { reference: string; amount: number; kind: "refund" | "reversal" }[];
   /** Rupees still refundable (payments only; 0 otherwise). */

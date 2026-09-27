@@ -1,6 +1,9 @@
 import {
   checkMoney,
   defaultSaveSpaceId,
+  isOpenSchedule,
+  pocketMoneyExecutionId,
+  POCKET_MONEY_DAY_OF_MONTH_MAX,
   INVITE_TTL_MS,
   isCalendarDate,
   isSpaceIcon,
@@ -22,6 +25,7 @@ import {
   type MoneyRequest,
   type MoneySpace,
   type OperationLeg,
+  type PocketMoneySchedule,
   type Recipient,
   type User,
   type Wallet,
@@ -41,9 +45,10 @@ import {
  * Validation and migration for persisted sandbox data.
  *
  *   v1 (Phase 2) ──migrateV1──▶ v3 ─┐
- *   v2 (Phase 3) ──migrateV2──▶ v3 ─┼─migrateV3──▶ v4 ─migrateV4──▶ v5 (current)
- *   v3 (Phase 4) ───────────────────┘              ▲
- *   v4 (Phase 5) ──────────────────────────────────┘
+ *   v2 (Phase 3) ──migrateV2──▶ v3 ─┼─migrateV3──▶ v4 ─migrateV4──▶ v5 ─migrateV5──▶ v6 (current)
+ *   v3 (Phase 4) ───────────────────┘              ▲                 ▲
+ *   v4 (Phase 5) ──────────────────────────────────┘                 │
+ *   v5 (Phase 6) ────────────────────────────────────────────────────┘
  *
  * Every step keeps the money history: no entry is dropped or changed
  * in amount, direction or date. Anything that fails validation takes
@@ -139,6 +144,19 @@ export interface V4Database {
   familyLogs: FamilyLog[];
   securityEvents: SandboxDatabase["securityEvents"];
   recipients: Recipient[];
+}
+
+/** Schema v5 (Phase 6): v6 without pocket money schedules. */
+export interface V5Database extends Omit<SandboxDatabase, "version" | "pocketMoneySchedules"> {
+  version: 5;
+}
+
+/** The Phase 3 preview, as stored inside guardian controls up to v5. */
+interface LegacyControlsAllowance {
+  amount: unknown;
+  frequency: unknown;
+  weekday: unknown;
+  dayOfMonth: unknown;
 }
 
 function isLedgerEntryLike(value: unknown): boolean {
@@ -373,38 +391,37 @@ export function isV4Database(value: unknown): value is UnknownRecord {
 }
 
 /**
- * Schema v5 — the only shape that is saved. Beyond shape checks it
- * verifies ledger integrity (see `ledgerIntegrity`) and Money Space
- * integrity: every Space owned by a real account on that account's
- * wallet; every Space entry naming a Space on the same wallet (and
- * only Space entries naming one); and no Space's running balance
- * ever below ₹0. Tampering is rejected, not loaded.
+ * Checks shared by v5 and v6. Beyond shape checks it verifies ledger
+ * integrity (see `ledgerIntegrity`) and Money Space integrity: every
+ * Space owned by a real account on that account's wallet; every Space
+ * entry naming a Space on the same wallet (and only Space entries
+ * naming one); and no Space's running balance ever below ₹0.
+ * Returns the wallet owners, or null.
  */
-export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
-  if (!isRecord(value) || value.version !== SANDBOX_SCHEMA_VERSION) return false;
+function coreIntegrity(value: UnknownRecord): Map<unknown, unknown> | null {
   const accountIds = hasValidAccountsAndFamilies(value);
-  if (!accountIds || !hasValidSideRecords(value)) return false;
+  if (!accountIds || !hasValidSideRecords(value)) return null;
   const owners = ledgerIntegrity(value, accountIds, (t) => Object.hasOwn(ENTRY_RULES, t));
-  if (!owners) return false;
+  if (!owners) return null;
 
-  if (!isArrayOf(value.spaces, (sp) => isSpaceRecord(sp, accountIds, owners))) return false;
+  if (!isArrayOf(value.spaces, (sp) => isSpaceRecord(sp, accountIds, owners))) return null;
   const spaces = value.spaces as UnknownRecord[];
   const spaceWallet = new Map(spaces.map((sp) => [sp.id, sp.walletId]));
-  if (spaceWallet.size !== spaces.length) return false;
+  if (spaceWallet.size !== spaces.length) return null;
   const held = new Map<unknown, number>();
   for (const e of value.ledger as UnknownRecord[]) {
     const isSpaceMove = e.type === "space_allocation" || e.type === "space_release";
     if (!isSpaceMove) {
-      if (e.spaceId !== undefined) return false;
+      if (e.spaceId !== undefined) return null;
       continue;
     }
-    if (spaceWallet.get(e.spaceId) !== e.walletId) return false;
+    if (spaceWallet.get(e.spaceId) !== e.walletId) return null;
     const next = (held.get(e.spaceId) ?? 0) + (e.type === "space_allocation" ? 1 : -1) * Number(e.amount);
-    if (next < 0) return false;
+    if (next < 0) return null;
     held.set(e.spaceId, next);
   }
 
-  return isArrayOf(
+  const recordsOk = isArrayOf(
     value.teenRecords,
     (r) =>
       isRecord(r) &&
@@ -412,6 +429,150 @@ export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
       Array.isArray(r.requests) &&
       Array.isArray(r.approvals),
   );
+  return recordsOk ? owners : null;
+}
+
+/** Schema v5 (Phase 6) — Money Spaces, before pocket money schedules. */
+export function isV5Database(value: unknown): value is UnknownRecord {
+  if (!isRecord(value) || value.version !== 5) return false;
+  if (!coreIntegrity(value)) return false;
+  // v5 never had scheduled pocket money in the ledger.
+  return (value.ledger as UnknownRecord[]).every((e) => e.scheduleId === undefined);
+}
+
+const SCHEDULE_STATUSES = new Set(["active", "paused", "completed", "cancelled"]);
+const END_REASONS = new Set(["cancelled", "family_disconnected", "end_date_reached"]);
+const FAILURE_REASONS = new Set([
+  "insufficient_funds",
+  "source_frozen",
+  "source_closed",
+  "destination_frozen",
+  "destination_closed",
+  "wallet_unavailable",
+  "rejected",
+]);
+
+function isIsoInstant(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+/**
+ * One stored schedule: real parent and teen accounts in a real family,
+ * the parent's wallet → the teen's wallet, a valid plan, a coherent
+ * status, and an append-only run history whose completed runs each
+ * point at the scheduled `allowance` operation that paid them.
+ */
+function isScheduleRecord(
+  value: unknown,
+  accounts: Map<unknown, unknown>,
+  familyIds: Set<unknown>,
+  owners: Map<unknown, unknown>,
+  operations: Map<unknown, UnknownRecord>,
+): boolean {
+  if (!isRecord(value)) return false;
+  const id = value.id;
+  if (typeof id !== "string" || id.length === 0) return false;
+  if (!familyIds.has(value.familyId)) return false;
+  if (accounts.get(value.parentAccountId) !== "parent") return false;
+  if (accounts.get(value.teenAccountId) !== "teen") return false;
+  if (owners.get(value.sourceWalletId) !== value.parentAccountId) return false;
+  if (owners.get(value.destinationWalletId) !== value.teenAccountId) return false;
+  if (checkMoney(value.amount) !== null || value.currency !== SANDBOX_CURRENCY) return false;
+  if (value.frequency !== "weekly" && value.frequency !== "monthly") return false;
+  const dow = value.dayOfWeek;
+  const dom = value.dayOfMonth;
+  if (typeof dow !== "number" || !Number.isInteger(dow) || dow < 0 || dow > 6) return false;
+  if (typeof dom !== "number" || !Number.isInteger(dom) || dom < 1 || dom > POCKET_MONEY_DAY_OF_MONTH_MAX) return false;
+  if (!isCalendarDate(value.startDate)) return false;
+  if (value.endDate !== undefined && (!isCalendarDate(value.endDate) || value.endDate < value.startDate)) return false;
+  if (!SCHEDULE_STATUSES.has(String(value.status))) return false;
+  if (value.status === "active" ? !isIsoInstant(value.nextRunAt) : value.nextRunAt !== null) return false;
+  const ended = value.status === "completed" || value.status === "cancelled";
+  if (ended ? !END_REASONS.has(String(value.endedReason)) : value.endedReason !== undefined) return false;
+  if (!isIsoInstant(value.createdAt) || !isIsoInstant(value.updatedAt)) return false;
+  if (value.lastRunAt !== undefined && !isIsoInstant(value.lastRunAt)) return false;
+  if (value.createdBy !== value.parentAccountId) return false;
+  const version = value.version;
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) return false;
+  if (!isIsoInstant(value.linkedAt)) return false;
+  if (!Array.isArray(value.runs)) return false;
+  const seen = new Set<string>();
+  for (const run of value.runs as unknown[]) {
+    if (!isRecord(run) || !isCalendarDate(run.occurrence)) return false;
+    const runId = pocketMoneyExecutionId(id, run.occurrence);
+    if (run.id !== runId || run.scheduleId !== id || seen.has(runId)) return false;
+    seen.add(runId);
+    if (checkMoney(run.amount) !== null || !isIsoInstant(run.at)) return false;
+    if (run.status === "completed") {
+      const op = operations.get(runId);
+      if (
+        !op ||
+        run.operationId !== runId ||
+        op.type !== "allowance" ||
+        op.scheduleId !== id ||
+        op.scheduledFor !== run.occurrence ||
+        op.amount !== run.amount ||
+        run.reference !== op.reference
+      ) {
+        return false;
+      }
+    } else if (run.status === "failed") {
+      if (!FAILURE_REASONS.has(String(run.reason)) || typeof run.message !== "string") return false;
+      // A failed occurrence never has money behind it.
+      if (operations.has(runId)) return false;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Schema v6 — the only shape that is saved. Everything v5 checks
+ * (see `coreIntegrity`), plus pocket money: every schedule valid (see
+ * `isScheduleRecord`), unique ids, at most one open schedule per
+ * parent and teen, and every scheduled ledger entry an allowance entry
+ * of a known schedule on that schedule's wallets. Tampering is
+ * rejected, not loaded.
+ */
+export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
+  if (!isRecord(value) || value.version !== SANDBOX_SCHEMA_VERSION) return false;
+  const owners = coreIntegrity(value);
+  if (!owners) return false;
+
+  const accounts = new Map((value.accounts as UnknownRecord[]).map((a) => [a.id, a.role]));
+  const familyIds = new Set((value.families as UnknownRecord[]).map((f) => f.id));
+  const operations = new Map((value.operations as UnknownRecord[]).map((op) => [op.id, op]));
+  if (
+    !isArrayOf(value.pocketMoneySchedules, (sc) =>
+      isScheduleRecord(sc, accounts, familyIds, owners, operations),
+    )
+  ) {
+    return false;
+  }
+  const schedules = value.pocketMoneySchedules as unknown as PocketMoneySchedule[];
+  const byId = new Map(schedules.map((sc) => [sc.id, sc]));
+  if (byId.size !== schedules.length) return false;
+  const openPairs = schedules
+    .filter((sc) => isOpenSchedule(sc))
+    .map((sc) => `${sc.parentAccountId}>${sc.teenAccountId}`);
+  if (new Set(openPairs).size !== openPairs.length) return false;
+
+  for (const e of value.ledger as UnknownRecord[]) {
+    if (e.scheduleId === undefined && e.scheduledFor === undefined) continue;
+    const schedule = byId.get(e.scheduleId as string);
+    if (!schedule) return false;
+    if (e.type === "allowance_debit" ? e.walletId !== schedule.sourceWalletId : e.type === "allowance_credit" ? e.walletId !== schedule.destinationWalletId : true) {
+      return false;
+    }
+    if (e.operationId !== pocketMoneyExecutionId(schedule.id, String(e.scheduledFor))) return false;
+  }
+  for (const op of operations.values()) {
+    if (op.scheduleId === undefined) continue;
+    const schedule = byId.get(op.scheduleId as string);
+    if (!schedule || !schedule.runs.some((r) => r.id === op.id && r.status === "completed")) return false;
+  }
+  return true;
 }
 
 /** A Phase 3 (v2) payload. */
@@ -548,6 +709,7 @@ export function databaseFromState(state: SandboxState): SandboxDatabase {
     ledger: state.ledger,
     operations: state.operations,
     spaces: state.spaces,
+    pocketMoneySchedules: state.schedules,
     teenRecords: [{ teenId, requests: state.requests, approvals: state.approvals }],
     notifications: state.notifications,
     familyLogs: [{ familyId: state.family.id, events: state.familyEvents }],
@@ -877,7 +1039,7 @@ export function parseLegacyDeadline(text: string | undefined, reference: string)
  *    balance is exactly what it was. A goal entry whose goal record
  *    is missing gets a custom Space so its money stays visible.
  */
-export function migrateV4(v4: V4Database, now: string): SandboxDatabase {
+export function migrateV4(v4: V4Database, now: string): V5Database {
   const spaces = new Map<string, MoneySpace>();
   const walletOf = (accountId: string) =>
     v4.wallets.find((w) => w.ownerAccountId === accountId && w.kind === "primary")?.id ??
@@ -987,7 +1149,7 @@ export function migrateV4(v4: V4Database, now: string): SandboxDatabase {
   });
 
   return {
-    version: SANDBOX_SCHEMA_VERSION,
+    version: 5,
     accounts: v4.accounts,
     families: v4.families,
     wallets: v4.wallets,
@@ -1006,13 +1168,86 @@ export function migrateV4(v4: V4Database, now: string): SandboxDatabase {
   };
 }
 
+/**
+ * v5 → v6: Pocket Money Autopilot.
+ *  · Every Phase 3 pocket-money preview (stored inside guardian
+ *    controls, never executed) becomes a *paused* schedule — the
+ *    preview promised nothing would send automatically, so the parent
+ *    decides when to resume it. Its amount and cadence are kept; it
+ *    starts from the migration day; it belongs to the current link.
+ *    A preview that can't be represented safely (no linked guardian,
+ *    missing wallets, invalid values) is dropped from controls only —
+ *    the untouched original stays in the repository backup.
+ *  · The preview field is then removed from controls.
+ *  · Money data is carried over untouched (no schedule has any runs).
+ */
+export function migrateV5(v5: V5Database, now: string): SandboxDatabase {
+  const today = productDay(now);
+  const schedules: PocketMoneySchedule[] = [];
+  const families: Family[] = v5.families.map((family) => ({
+    ...family,
+    controls: family.controls.map((controls) => {
+      const { allowance, ...rest } = controls as typeof controls & {
+        allowance?: LegacyControlsAllowance | null;
+      };
+      if (!allowance) return rest;
+      const link = family.links.find((l) => l.teenId === controls.teenId);
+      const guardianId = link?.guardianId ?? null;
+      const guardian = v5.accounts.find((a) => a.id === guardianId && a.role === "parent");
+      const source = guardian
+        ? v5.wallets.find((w) => w.ownerAccountId === guardian.id && w.kind === "primary")
+        : undefined;
+      const destination = v5.wallets.find(
+        (w) => w.ownerAccountId === controls.teenId && w.kind === "primary",
+      );
+      const { amount, frequency, weekday, dayOfMonth } = allowance;
+      const valid =
+        checkMoney(amount) === null &&
+        (frequency === "weekly" || frequency === "monthly") &&
+        typeof weekday === "number" && Number.isInteger(weekday) && weekday >= 0 && weekday <= 6 &&
+        typeof dayOfMonth === "number" && Number.isInteger(dayOfMonth) &&
+        dayOfMonth >= 1 && dayOfMonth <= POCKET_MONEY_DAY_OF_MONTH_MAX;
+      if (!guardian || !source || !destination || !valid || link?.status !== "linked") return rest;
+      schedules.push({
+        id: `pms_legacy_${controls.teenId}`,
+        familyId: family.id,
+        parentAccountId: guardian.id,
+        teenAccountId: controls.teenId,
+        sourceWalletId: source.id,
+        destinationWalletId: destination.id,
+        amount: amount as number,
+        currency: SANDBOX_CURRENCY,
+        frequency: frequency as "weekly" | "monthly",
+        dayOfWeek: frequency === "weekly" ? (weekday as number) : 1,
+        dayOfMonth: frequency === "monthly" ? (dayOfMonth as number) : 1,
+        startDate: today,
+        nextRunAt: null,
+        status: "paused",
+        createdAt: controls.updatedAt,
+        updatedAt: now,
+        createdBy: guardian.id,
+        version: 1,
+        linkedAt: link.linkedAt ?? controls.updatedAt,
+        runs: [],
+      });
+      return rest;
+    }),
+  }));
+  return {
+    ...v5,
+    version: SANDBOX_SCHEMA_VERSION,
+    families,
+    pocketMoneySchedules: schedules,
+  };
+}
+
 export type MigrationResult =
   | { kind: "current"; db: SandboxDatabase }
-  | { kind: "migrated"; from: 1 | 2 | 3 | 4; db: SandboxDatabase }
+  | { kind: "migrated"; from: 1 | 2 | 3 | 4 | 5; db: SandboxDatabase }
   | { kind: "unreadable" };
 
 /**
- * Turns any stored payload into a current (v5) database, or says it
+ * Turns any stored payload into a current (v6) database, or says it
  * can't. Every intermediate result is re-validated before the next
  * step, and the final one before it's trusted.
  */
@@ -1022,27 +1257,35 @@ export function migrateToCurrent(
 ): MigrationResult {
   if (isSandboxDatabase(parsed)) return { kind: "current", db: parsed };
   try {
-    let v4: V4Database | null = null;
-    let from: 1 | 2 | 3 | 4 = 4;
-    if (isV4Database(parsed)) {
-      v4 = parsed as unknown as V4Database;
+    let v5: V5Database | null = null;
+    let from: 1 | 2 | 3 | 4 | 5 = 5;
+    if (isV5Database(parsed)) {
+      v5 = parsed as unknown as V5Database;
     } else {
-      let v3: V3Database | null = null;
-      from = 3;
-      if (isV3Database(parsed)) {
-        v3 = parsed as unknown as V3Database;
-      } else if (isV2State(parsed)) {
-        v3 = migrateV2(parsed, options.now);
-        from = 2;
-      } else if (isV1State(parsed)) {
-        v3 = migrateV1(parsed, options.seedView);
-        from = 1;
+      let v4: V4Database | null = null;
+      from = 4;
+      if (isV4Database(parsed)) {
+        v4 = parsed as unknown as V4Database;
+      } else {
+        let v3: V3Database | null = null;
+        from = 3;
+        if (isV3Database(parsed)) {
+          v3 = parsed as unknown as V3Database;
+        } else if (isV2State(parsed)) {
+          v3 = migrateV2(parsed, options.now);
+          from = 2;
+        } else if (isV1State(parsed)) {
+          v3 = migrateV1(parsed, options.seedView);
+          from = 1;
+        }
+        if (!v3 || !isV3Database(v3)) return { kind: "unreadable" };
+        v4 = migrateV3(v3);
+        if (!isV4Database(v4)) return { kind: "unreadable" };
       }
-      if (!v3 || !isV3Database(v3)) return { kind: "unreadable" };
-      v4 = migrateV3(v3);
-      if (!isV4Database(v4)) return { kind: "unreadable" };
+      v5 = migrateV4(v4, options.now);
+      if (!isV5Database(v5)) return { kind: "unreadable" };
     }
-    const db = migrateV4(v4, options.now);
+    const db = migrateV5(v5, options.now);
     return isSandboxDatabase(db) ? { kind: "migrated", from, db } : { kind: "unreadable" };
   } catch {
     return { kind: "unreadable" };

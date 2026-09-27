@@ -8,6 +8,7 @@ import type {
   MoneyRequest,
   Recipient,
   MoneySpace,
+  PocketMoneySchedule,
   SecurityEvent,
   User,
   Wallet,
@@ -27,8 +28,11 @@ import type {
  * v5 — Phase 6 (Money Spaces: space records owned by accounts;
  *      Save/goal allocations became space_allocation/space_release
  *      entries carrying a spaceId; goal records became goal Spaces).
+ * v6 — Phase 7 (Pocket Money Autopilot: recurring schedules as their
+ *      own records with an append-only run history; the Phase 3
+ *      preview inside guardian controls became a paused schedule).
  */
-export const SANDBOX_SCHEMA_VERSION = 5;
+export const SANDBOX_SCHEMA_VERSION = 6;
 
 // Money limits live in the domain (one definition); re-exported here
 // for existing imports.
@@ -72,7 +76,7 @@ export interface FamilyLog {
 }
 
 /**
- * The persisted sandbox database (schema v5), grouped by owner:
+ * The persisted sandbox database (schema v6), grouped by owner:
  *  · accounts — profile
  *  · families — relationships, permissions, settings
  *  · wallets — one or more per account (status, never a balance)
@@ -80,6 +84,9 @@ export interface FamilyLog {
  *  · operations — the audit + idempotency log for money actions
  *  · spaces — Money Spaces, owned by an account, bound to a wallet
  *    (settings only — a Space's balance is derived from the ledger)
+ *  · pocketMoneySchedules — recurring pocket money, owned by the
+ *    paying parent, with each processed occurrence (settings and
+ *    history only — money moves as ledger operations)
  *  · teenRecords — requests, approvals
  *  · notifications (per recipient), security events (per account)
  * A cloud repository would store the same records in separate tables.
@@ -92,6 +99,7 @@ export interface SandboxDatabase {
   ledger: LedgerEntry[];
   operations: MoneyOperation[];
   spaces: MoneySpace[];
+  pocketMoneySchedules: PocketMoneySchedule[];
   teenRecords: TeenRecords[];
   notifications: AppNotification[];
   familyLogs: FamilyLog[];
@@ -136,6 +144,12 @@ export interface SandboxState {
    * linked teen's, for a guardian — are never in scope.
    */
   spaces: MoneySpace[];
+  /**
+   * Pocket money schedules in this view: those the viewer pays (while
+   * linked to that teen), or those paying the viewer (read-only, with
+   * failure reasons redacted). Nobody else's are ever in scope.
+   */
+  schedules: PocketMoneySchedule[];
 }
 
 export type SandboxErrorCode =
@@ -170,7 +184,10 @@ export type SandboxErrorCode =
   | "unknown_wallet"
   | "wallet_frozen"
   | "wallet_closed"
-  | "not_refundable";
+  | "not_refundable"
+  | "unknown_schedule"
+  | "invalid_schedule"
+  | "stale_schedule";
 
 /**
  * A typed, human-readable error. `code` drives logic; `message`
@@ -180,7 +197,17 @@ export interface SandboxError {
   code: SandboxErrorCode;
   message: string;
   /** The form field a validation error belongs to, when there is one. */
-  field?: "name" | "icon" | "type" | "targetAmount" | "deadline" | "amount";
+  field?:
+    | "name"
+    | "icon"
+    | "type"
+    | "targetAmount"
+    | "deadline"
+    | "amount"
+    | "frequency"
+    | "day"
+    | "startDate"
+    | "endDate";
 }
 
 export type SandboxResult<T = undefined> =

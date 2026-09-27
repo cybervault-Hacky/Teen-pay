@@ -98,6 +98,9 @@ export interface OperationDraft {
   approvalId?: string;
   requestId?: string;
   relatedOperationId?: string;
+  /** Scheduled pocket money only (see `allowanceRunDraft`). */
+  scheduleId?: string;
+  scheduledFor?: string;
 }
 
 export type PostResult<J extends Journal> =
@@ -292,12 +295,16 @@ function fingerprint(
     direction: LedgerDirection;
     amount: number;
   }[],
+  schedule?: { scheduleId?: string; scheduledFor?: string },
 ): string {
   return [
     type,
     ...legs
       .map((l) => `${l.walletId ?? `ext:${l.external?.id ?? ""}`}:${l.direction}:${l.amount}`)
       .sort(),
+    // Only scheduled pocket money carries this, so every other
+    // operation's fingerprint is exactly what it always was.
+    ...(schedule?.scheduleId ? [`schedule:${schedule.scheduleId}:${schedule.scheduledFor ?? ""}`] : []),
   ].join("|");
 }
 
@@ -312,13 +319,22 @@ export function postOperation<J extends Journal>(
   // Idempotency first: a replay is answered from the record.
   const existing = journal.operations.find((op) => op.id === draft.id);
   if (existing) {
-    return fingerprint(existing.type, existing.legs) === fingerprint(draft.type, draft.legs)
+    return fingerprint(existing.type, existing.legs, existing) === fingerprint(draft.type, draft.legs, draft)
       ? { ok: true, journal, operation: existing, replayed: true }
       : { ok: false, error: DUPLICATE };
   }
 
   const currency = draft.currency ?? SANDBOX_CURRENCY;
   const walletLegs = draft.legs.filter(isWalletLeg);
+  if ((draft.scheduleId !== undefined || draft.scheduledFor !== undefined) && (
+    draft.type !== "allowance" ||
+    !draft.scheduleId ||
+    !draft.scheduledFor ||
+    draft.id !== `${draft.scheduleId}:${draft.scheduledFor}` ||
+    walletLegs.length !== 2
+  )) {
+    return { ok: false, error: { code: "entry_rejected", message: "Only a scheduled pocket-money transfer can name a schedule." } };
+  }
   if (walletLegs.length === 0 || walletLegs.length > 2) {
     return { ok: false, error: { code: "entry_rejected", message: "This operation has no valid wallet movement." } };
   }
@@ -379,6 +395,7 @@ export function postOperation<J extends Journal>(
       ...(leg.requestId ? { requestId: leg.requestId } : {}),
       ...(draft.approvalId ? { approvalId: draft.approvalId } : {}),
       ...(leg.relatedEntryId ? { relatedEntryId: leg.relatedEntryId } : {}),
+      ...(draft.scheduleId ? { scheduleId: draft.scheduleId, scheduledFor: draft.scheduledFor } : {}),
       createdAt: draft.at,
       createdBy: draft.actorId,
     };
@@ -414,6 +431,7 @@ export function postOperation<J extends Journal>(
     ...(draft.approvalId ? { approvalId: draft.approvalId } : {}),
     ...(draft.requestId ? { requestId: draft.requestId } : {}),
     ...(draft.relatedOperationId ? { relatedOperationId: draft.relatedOperationId } : {}),
+    ...(draft.scheduleId ? { scheduleId: draft.scheduleId, scheduledFor: draft.scheduledFor } : {}),
   }) as MoneyOperation;
 
   return {
@@ -565,6 +583,37 @@ export function transferDraft(
         description,
       },
     ],
+  };
+}
+
+/**
+ * One scheduled pocket-money occurrence: the same two-leg `allowance`
+ * transfer as one-off pocket money (ALW- reference), tagged with its
+ * schedule and occurrence. Its id is the execution id
+ * `scheduleId:YYYY-MM-DD`, so an occurrence can only ever post once.
+ */
+export function allowanceRunDraft(
+  input: Omit<Base, "id"> & {
+    scheduleId: string;
+    occurrence: string;
+    from: WalletParty;
+    to: WalletParty;
+    amount: number;
+  },
+): OperationDraft {
+  return {
+    ...transferDraft({
+      id: `${input.scheduleId}:${input.occurrence}`,
+      actorId: input.actorId,
+      at: input.at,
+      from: input.from,
+      to: input.to,
+      amount: input.amount,
+      note: "Scheduled pocket money",
+      purpose: "allowance",
+    }),
+    scheduleId: input.scheduleId,
+    scheduledFor: input.occurrence,
   };
 }
 

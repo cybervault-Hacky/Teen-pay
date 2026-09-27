@@ -1,6 +1,7 @@
 /**
  * Domain: guardian controls — spending limits, approval rules,
- * guardian notification preferences, and the allowance schedule.
+ * and guardian notification preferences. Recurring pocket money lives
+ * in its own records (see `allowance.ts`).
  *
  * Controls are set by a linked guardian and are always visible to
  * the teen. There are no hidden restrictions: every rule enforced
@@ -38,19 +39,16 @@ export interface GuardianNotificationSettings {
   approvals: true;
 }
 
-export type AllowanceFrequency = "weekly" | "monthly";
-
 /**
- * A recurring pocket-money plan. Phase 3 represents the schedule
- * and previews the next date; nothing sends automatically.
+ * The Phase 3 pocket-money *preview* (stored inside controls up to
+ * schema v5, never executed). Schema v6 migrates it into a paused
+ * `PocketMoneySchedule`; the type remains only so old family-log
+ * events stay readable.
  */
-export interface AllowanceSchedule {
-  /** Whole rupees per payout. */
+export interface LegacyAllowancePreview {
   amount: number;
-  frequency: AllowanceFrequency;
-  /** 0 = Sunday … 6 = Saturday. Used when weekly. */
+  frequency: "weekly" | "monthly";
   weekday: number;
-  /** 1–28. Used when monthly (28 keeps every month valid). */
   dayOfMonth: number;
 }
 
@@ -59,7 +57,6 @@ export interface GuardianControls {
   limits: SpendingLimits;
   approval: ApprovalRule;
   notifications: GuardianNotificationSettings;
-  allowance: AllowanceSchedule | null;
   /** ISO 8601 timestamp. */
   updatedAt: string;
   /** User id of the guardian who last changed a rule. */
@@ -77,7 +74,6 @@ export function defaultGuardianControls(
     limits: { dailyLimit: null, perTransactionLimit: null },
     approval: { threshold: null },
     notifications: { payments: false, savings: true, approvals: true },
-    allowance: null,
     updatedAt: at,
     updatedBy: guardianId,
   };

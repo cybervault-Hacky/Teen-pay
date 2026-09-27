@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarClock, SlidersHorizontal, UserPlus } from "lucide-react";
+import { SlidersHorizontal, UserPlus } from "lucide-react";
 import { useState } from "react";
 import { formatUsername, type User } from "@/domain";
 import { formatINR } from "@/lib/currency";
@@ -34,7 +34,7 @@ import { Switch } from "@/components/ui/switch";
 import { TransactionRow } from "@/components/ui/transaction-row";
 import { GuardianApprovalCard } from "@/components/family/approval-cards";
 import { RulesSummary } from "@/components/family/rules-summary";
-import { AllowanceScheduleForm } from "./allowance-schedule-form";
+import { ParentPocketMoney } from "@/components/pocket-money/parent-pocket-money";
 import { SendPocketMoney } from "./send-pocket-money";
 import { SpendingRulesForm } from "./spending-rules-form";
 import { FrozenBanner } from "@/components/wallet/frozen-banner";
@@ -109,7 +109,7 @@ export function ParentContent() {
 function TeenDashboard({ teen }: { teen: User }) {
   const { state, actions } = useSandbox();
   const [announcement, setAnnouncement] = useState("");
-  const [sheet, setSheet] = useState<"rules" | "schedule" | null>(null);
+  const [sheet, setSheet] = useState<"rules" | null>(null);
 
   const available = selectAvailableBalance(state);
   const total = selectTotal(state);
@@ -234,25 +234,19 @@ function TeenDashboard({ teen }: { teen: User }) {
         <RulesSummary teenId={teen.id} perspective="guardian" />
       </section>
 
-      {/* Pocket money. */}
+      {/* Pocket money: the recurring schedule, then a one-off send. */}
       <section aria-label="Pocket money">
-        <SectionHeader
-          title="Send pocket money"
-          action={
-            mayManage && (
-            <Button variant="ghost" size="sm" onClick={() => setSheet("schedule")}>
-              <CalendarClock className="h-4 w-4" aria-hidden />
-              {controls?.allowance ? "Edit schedule" : "Set schedule"}
-            </Button>
-            )
-          }
-        />
+        <SectionHeader title="Pocket money" />
         {teenWallet && teenWallet.status !== "active" && (
           <div className="mb-3">
             <FrozenBanner wallet={teenWallet} ownerName={`${teen.displayName}'s`} />
           </div>
         )}
-        <Card className="p-5">
+        <ParentPocketMoney teen={teen} />
+        <Card className="mt-3 p-5">
+          <h3 className="mb-3 text-xs font-semibold uppercase tracking-[0.1em] text-ink-faint">
+            Send once
+          </h3>
           <SendPocketMoney
             teenName={teen.displayName}
             paused={teenWallet !== null && teenWallet.status !== "active"}
@@ -335,14 +329,6 @@ function TeenDashboard({ teen }: { teen: User }) {
 
       <Modal open={sheet === "rules"} onClose={() => closeSheet()} title="Spending rules">
         <SpendingRulesForm
-          teenId={teen.id}
-          teenName={teen.displayName}
-          onSaved={(message) => closeSheet(message)}
-          onCancel={() => closeSheet()}
-        />
-      </Modal>
-      <Modal open={sheet === "schedule"} onClose={() => closeSheet()} title="Pocket money schedule">
-        <AllowanceScheduleForm
           teenId={teen.id}
           teenName={teen.displayName}
           onSaved={(message) => closeSheet(message)}

@@ -20,9 +20,9 @@ import {
   claimInviteTransition,
   createInviteTransition,
   disconnectTransition,
-  setAllowanceScheduleTransition,
   updateSpendingRulesTransition,
 } from "@/sandbox/family-transitions";
+import { createPocketMoneyScheduleTransition } from "@/sandbox/allowance-transitions";
 import { databaseFromState } from "@/sandbox/persistence";
 import { mergeScope, scopeFor } from "@/sandbox/scope";
 import { buildSeedDatabase, buildSeedState, SEED_PARENT_ID, SEED_TEEN_ID } from "@/sandbox/seed";
@@ -291,7 +291,16 @@ describe("authorization — permissions", () => {
     expect(canManageSpendingRules(s, SEED_TEEN_ID, SEED_TEEN_ID)).toBe(false);
     expect(
       errorCode(
-        setAllowanceScheduleTransition(s, { ...TEEN, teenId: SEED_TEEN_ID, schedule: null }),
+        createPocketMoneyScheduleTransition(s, {
+          ...TEEN,
+          scheduleId: "pms_teen",
+          teenId: SEED_TEEN_ID,
+          amount: 500,
+          frequency: "weekly",
+          dayOfWeek: 1,
+          dayOfMonth: 1,
+          startDate: "2026-09-26",
+        }),
       ),
     ).toBe("not_permitted");
   });

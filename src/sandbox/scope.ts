@@ -6,11 +6,17 @@ import type {
   LedgerEntry,
   MoneyOperation,
   MoneySpace,
+  PocketMoneySchedule,
   SecurityEvent,
   User,
   Wallet,
 } from "@/domain";
-import { SECURITY_EVENT_LIMIT, type AccountProfile } from "@/domain";
+import {
+  SECURITY_EVENT_LIMIT,
+  TEEN_FAILED_RUN_MESSAGE,
+  isOpenSchedule,
+  type AccountProfile,
+} from "@/domain";
 import type { SandboxDatabase, SandboxState, TeenRecords } from "./types";
 
 /**
@@ -33,6 +39,13 @@ import type { SandboxDatabase, SandboxState, TeenRecords } from "./types";
  * (balance, payments) but every Space movement in it is redacted to a
  * generic "Money Space" — no Space id, name or goal. The amounts stay,
  * so the teen's available balance is still correct for the guardian.
+ *
+ * Pocket money schedules belong to the paying parent. A scope holds a
+ * parent's own schedules only while that parent is actively linked to
+ * the teen, and a teen's schedules read-only with every failure reason
+ * redacted (it may be about the parent's balance). Only the payer can
+ * write one; the teen's single exception is the cancellation that a
+ * disconnect performs.
  */
 
 export interface ScopeInfo {
@@ -186,10 +199,12 @@ function assemble(
   walletIds: ReadonlySet<string>,
   records: TeenRecords,
   notifications: AppNotification[],
+  schedules: PocketMoneySchedule[],
   /** Engine-level views see everything unredacted. */
   engineLevel = false,
 ): SandboxState {
   return {
+    schedules,
     users,
     session: { currentUserId: viewerId },
     family,
@@ -244,7 +259,16 @@ export function scopeFor(
   const notifications = db.notifications.filter((n) => n.recipientId === viewerId);
 
   return {
-    state: assemble(db, family, viewerId, users, walletIds, records, notifications),
+    state: assemble(
+      db,
+      family,
+      viewerId,
+      users,
+      walletIds,
+      records,
+      notifications,
+      schedulesFor(db, family, viewerId),
+    ),
     info: {
       viewerId,
       familyId: family.id || null,
@@ -269,7 +293,60 @@ export function databaseView(
   const records = db.teenRecords.find((r) => r.teenId === teenId) ?? emptyRecords(teenId);
   // Engine-level: every account is visible here, so every wallet is.
   const walletIds = new Set(db.wallets.map((w) => w.id));
-  return assemble(db, family, viewerId, db.accounts, walletIds, records, db.notifications, true);
+  return assemble(
+    db,
+    family,
+    viewerId,
+    db.accounts,
+    walletIds,
+    records,
+    db.notifications,
+    db.pocketMoneySchedules.filter((s) => s.familyId === family.id),
+    true,
+  );
+}
+
+/** The teen's copy: failure reasons stay with the parent. */
+function redactForTeen(schedule: PocketMoneySchedule): PocketMoneySchedule {
+  if (!schedule.runs.some((r) => r.status === "failed")) return schedule;
+  return {
+    ...schedule,
+    runs: schedule.runs.map((run) => {
+      if (run.status !== "failed") return run;
+      const { reason: _reason, message: _message, ...rest } = run;
+      void _reason;
+      void _message;
+      return { ...rest, message: TEEN_FAILED_RUN_MESSAGE };
+    }),
+  };
+}
+
+/**
+ * Schedules in a viewer's scope: the ones they pay while linked to
+ * that teen, and the ones paying them (read-only, redacted).
+ */
+function schedulesFor(
+  db: SandboxDatabase,
+  family: Family,
+  viewerId: string,
+): PocketMoneySchedule[] {
+  if (!family.id) return [];
+  const activeTeen = family.members.some(
+    (m) => m.accountId === viewerId && m.role === "teen" && m.status === "active",
+  );
+  const out: PocketMoneySchedule[] = [];
+  for (const schedule of db.pocketMoneySchedules) {
+    if (schedule.familyId !== family.id) continue;
+    if (
+      schedule.parentAccountId === viewerId &&
+      canSeeWallet(family, viewerId, schedule.teenAccountId)
+    ) {
+      out.push(schedule);
+    } else if (schedule.teenAccountId === viewerId && activeTeen) {
+      out.push(redactForTeen(schedule));
+    }
+  }
+  return out;
 }
 
 /** Family events that are also security-relevant for the accounts involved. */
@@ -449,6 +526,129 @@ function mergeSpaces(
   return { ...db, spaces: [...byId.values()] };
 }
 
+const SCHEDULE_IDENTITY: readonly (keyof PocketMoneySchedule)[] = [
+  "id",
+  "familyId",
+  "parentAccountId",
+  "teenAccountId",
+  "sourceWalletId",
+  "destinationWalletId",
+  "currency",
+  "createdAt",
+  "createdBy",
+  "linkedAt",
+];
+
+const DISCONNECT_FIELDS = new Set(["status", "endedReason", "nextRunAt", "updatedAt", "version"]);
+
+function withoutKeys(record: object, keys: ReadonlySet<string>): string {
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(record)
+        .filter(([key]) => !keys.has(key))
+        .sort(([a], [b]) => a.localeCompare(b)),
+    ),
+  );
+}
+
+/**
+ * Pocket money schedules are upserted, payer-only, and never deleted:
+ *  · only the paying parent writes a schedule, from their own wallet
+ *    to that teen's wallet, both in this scope, in this family;
+ *  · identity fields (who, which wallets, which link) never change;
+ *  · the version only moves forward; runs are append-only; an ended
+ *    schedule (completed or cancelled) is final.
+ * The teen's one exception: the cancellation their own disconnect
+ * performs (status → cancelled, reason family_disconnected), applied
+ * to the stored record — never to their redacted copy.
+ */
+function mergeSchedules(
+  db: SandboxDatabase,
+  info: ScopeInfo,
+  before: SandboxState,
+  after: SandboxState,
+): SandboxDatabase {
+  if (before.schedules === after.schedules) return db;
+  const afterIds = new Set(after.schedules.map((s) => s.id));
+  if (before.schedules.some((s) => !afterIds.has(s.id))) {
+    throw new LedgerIntegrityError("Pocket money schedules can't be deleted.");
+  }
+  const byId = new Map(db.pocketMoneySchedules.map((s) => [s.id, s]));
+  const beforeById = new Map(before.schedules.map((s) => [s.id, s]));
+  const walletIds = new Set(info.walletIds);
+  const walletOwner = new Map(db.wallets.map((w) => [w.id, w.ownerAccountId]));
+
+  for (const schedule of after.schedules) {
+    const previous = beforeById.get(schedule.id);
+    if (previous && sameRecord(previous, schedule)) continue;
+    const stored = byId.get(schedule.id);
+    if (!previous && stored) throw new LedgerIntegrityError("Schedule ids are unique.");
+    if (previous && !stored) throw new LedgerIntegrityError("Unknown schedule.");
+
+    const payer =
+      schedule.parentAccountId === info.viewerId &&
+      (stored === undefined || stored.parentAccountId === info.viewerId);
+    if (payer) {
+      if (
+        schedule.familyId !== info.familyId ||
+        !walletIds.has(schedule.sourceWalletId) ||
+        walletOwner.get(schedule.sourceWalletId) !== info.viewerId ||
+        !walletIds.has(schedule.destinationWalletId) ||
+        walletOwner.get(schedule.destinationWalletId) !== schedule.teenAccountId
+      ) {
+        throw new LedgerIntegrityError("A schedule must pay from the payer's wallet to the teen's.");
+      }
+      if (stored) {
+        if (SCHEDULE_IDENTITY.some((key) => !sameRecord(stored[key], schedule[key]))) {
+          throw new LedgerIntegrityError("A schedule's parties and wallets can't change.");
+        }
+        if (!isOpenSchedule(stored)) throw new LedgerIntegrityError("An ended schedule is final.");
+        if (schedule.version <= stored.version) {
+          throw new LedgerIntegrityError("Schedule versions only move forward.");
+        }
+        if (
+          schedule.runs.length < stored.runs.length ||
+          stored.runs.some((run, i) => !sameRecord(run, schedule.runs[i]))
+        ) {
+          throw new LedgerIntegrityError("Pocket money history is append-only.");
+        }
+      } else if (schedule.version !== 1 || schedule.runs.length !== 0) {
+        throw new LedgerIntegrityError("A new schedule starts at version 1 with no history.");
+      }
+      byId.set(schedule.id, schedule);
+      continue;
+    }
+
+    // The teen: only the cancellation their disconnect performs.
+    const link = after.family.links.find((l) => l.teenId === info.viewerId);
+    if (
+      stored &&
+      previous &&
+      schedule.teenAccountId === info.viewerId &&
+      stored.teenAccountId === info.viewerId &&
+      isOpenSchedule(stored) &&
+      link?.status === "disconnected" &&
+      schedule.status === "cancelled" &&
+      schedule.endedReason === "family_disconnected" &&
+      schedule.nextRunAt === null &&
+      schedule.version === previous.version + 1 &&
+      withoutKeys(schedule, DISCONNECT_FIELDS) === withoutKeys(previous, DISCONNECT_FIELDS)
+    ) {
+      byId.set(schedule.id, {
+        ...stored,
+        status: "cancelled",
+        endedReason: "family_disconnected",
+        nextRunAt: null,
+        updatedAt: schedule.updatedAt,
+        version: stored.version + 1,
+      });
+      continue;
+    }
+    throw new LedgerIntegrityError("Only the parent who pays a schedule can change it.");
+  }
+  return { ...db, pocketMoneySchedules: [...byId.values()] };
+}
+
 /**
  * Writes a scope's changes back. Only the scope's own family, teen
  * records and permitted wallets are written (the ledger append-only); notifications are upserted by id
@@ -492,6 +692,7 @@ export function mergeScope(
 
   next = mergeSpaces(next, info, before, after);
   next = mergeFinancialRecords(next, new Set(info.walletIds), before, after);
+  next = mergeSchedules(next, info, before, after);
 
   if (after.notifications !== before.notifications) {
     const mine = new Set(before.notifications.map((n) => n.id));

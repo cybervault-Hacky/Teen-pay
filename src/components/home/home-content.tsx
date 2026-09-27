@@ -21,6 +21,7 @@ import { HomeHeader } from "./home-header";
 import { PendingRequests } from "./pending-requests";
 import { QuickActions } from "./quick-actions";
 import { SpacesSummary } from "./spaces-summary";
+import { NextPocketMoney } from "./next-pocket-money";
 import { SpendingStrip } from "./spending-strip";
 import { SectionHeader } from "@/components/ui/section-header";
 import { TeenApprovalCard } from "@/components/family/approval-cards";
@@ -69,6 +70,8 @@ export function HomeContent() {
         <QuickActions />
 
         <SpendingStrip teenId={teen.id} />
+
+        <NextPocketMoney teenId={teen.id} />
 
         {approvals.length > 0 && (
           <section aria-label="Waiting for approval">

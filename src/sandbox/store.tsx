@@ -13,8 +13,8 @@ import { useOptionalAuth } from "@/auth/provider";
 import type { AuthEvent } from "@/auth/types";
 import type {
   AccountProfile,
-  AllowanceSchedule,
   ApprovalRequest,
+  PocketMoneyFrequency,
   ApprovalRule,
   NewAccountInput,
   SecurityEvent,
@@ -43,10 +43,20 @@ import {
   createInviteTransition,
   disconnectTransition,
   releaseInviteTransition,
-  setAllowanceScheduleTransition,
   updateGuardianNotificationsTransition,
   updateSpendingRulesTransition,
 } from "./family-transitions";
+import {
+  cancelPocketMoneyScheduleTransition,
+  createPocketMoneyScheduleTransition,
+  executeDuePocketMoneyTransition,
+  pausePocketMoneyScheduleTransition,
+  resumePocketMoneyScheduleTransition,
+  updatePocketMoneyScheduleTransition,
+  type ExecutePocketMoneyResult,
+  type PocketMoneyScheduleResult,
+  type UpdatePocketMoneyInput,
+} from "./allowance-transitions";
 import {
   createLocalRepository,
   describeLoadOutcome,
@@ -175,10 +185,51 @@ export interface SandboxActions {
     payments: boolean;
     savings: boolean;
   }) => SandboxResult;
-  setAllowanceSchedule: (input: {
+
+  // ── Pocket Money Autopilot (the paying parent; see allowance-transitions.ts) ──
+  /**
+   * Creates a recurring schedule from the parent's wallet to the teen's.
+   * `idempotencyId` (generated once per form) becomes its id, so a
+   * double submit creates one schedule. Wallets are derived in the
+   * engine; any echoed ids are verified, never trusted.
+   */
+  createPocketMoneySchedule: (input: {
+    idempotencyId?: string;
     teenId: string;
-    schedule: AllowanceSchedule | null;
-  }) => SandboxResult;
+    amount: number;
+    frequency: PocketMoneyFrequency;
+    dayOfWeek: number;
+    dayOfMonth: number;
+    startDate: string;
+    endDate?: string;
+    sourceWalletId?: string;
+    destinationWalletId?: string;
+  }) => SandboxResult<PocketMoneyScheduleResult>;
+  /** Edits the plan; refused when `expectedVersion` is stale. */
+  updatePocketMoneySchedule: (
+    input: Omit<UpdatePocketMoneyInput, "actorId" | "at">,
+  ) => SandboxResult<PocketMoneyScheduleResult>;
+  pausePocketMoneySchedule: (
+    scheduleId: string,
+    expectedVersion?: number,
+  ) => SandboxResult<PocketMoneyScheduleResult>;
+  resumePocketMoneySchedule: (
+    scheduleId: string,
+    expectedVersion?: number,
+  ) => SandboxResult<PocketMoneyScheduleResult>;
+  cancelPocketMoneySchedule: (
+    scheduleId: string,
+    expectedVersion?: number,
+  ) => SandboxResult<PocketMoneyScheduleResult>;
+  /**
+   * Sandbox execution — nothing runs on a timer. Processes due
+   * occurrences as of `asOf` (default: now); each occurrence at most
+   * once, ever.
+   */
+  executeDuePocketMoney: (input?: {
+    asOf?: string;
+    scheduleId?: string;
+  }) => SandboxResult<ExecutePocketMoneyResult>;
 
   // ── Approvals ──
   decideApproval: (
@@ -496,7 +547,21 @@ export function SandboxProvider({
       updateSpendingRules: (input) => dispatch((s) => updateSpendingRulesTransition(s, input)),
       updateGuardianNotifications: (input) =>
         dispatch((s) => updateGuardianNotificationsTransition(s, input)),
-      setAllowanceSchedule: (input) => dispatch((s) => setAllowanceScheduleTransition(s, input)),
+
+      createPocketMoneySchedule: ({ idempotencyId, ...input }) => {
+        const scheduleId = idempotencyId ?? makeId("pms");
+        return dispatch((s) => createPocketMoneyScheduleTransition(s, { ...input, scheduleId }));
+      },
+      updatePocketMoneySchedule: (input) =>
+        dispatch((s) => updatePocketMoneyScheduleTransition(s, input)),
+      pausePocketMoneySchedule: (scheduleId, expectedVersion) =>
+        dispatch((s) => pausePocketMoneyScheduleTransition(s, { scheduleId, expectedVersion })),
+      resumePocketMoneySchedule: (scheduleId, expectedVersion) =>
+        dispatch((s) => resumePocketMoneyScheduleTransition(s, { scheduleId, expectedVersion })),
+      cancelPocketMoneySchedule: (scheduleId, expectedVersion) =>
+        dispatch((s) => cancelPocketMoneyScheduleTransition(s, { scheduleId, expectedVersion })),
+      executeDuePocketMoney: (input = {}) =>
+        dispatch((s) => executeDuePocketMoneyTransition(s, input)),
 
       decideApproval: (approvalId, decision) =>
         dispatch((s) => decideApprovalTransition(s, { approvalId, decision })),

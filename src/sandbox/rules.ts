@@ -1,9 +1,11 @@
-import type {
-  AllowanceSchedule,
-  ApprovalRule,
-  LedgerEntry,
-  SpendingLimits,
-  User,
+import {
+  describePocketMoneyCadence,
+  firstOccurrenceOnOrAfter,
+  type ApprovalRule,
+  type LedgerEntry,
+  type PocketMoneyCadence,
+  type SpendingLimits,
+  type User,
 } from "@/domain";
 import { formatINR } from "@/lib/currency";
 import { dayKey } from "@/lib/format";
@@ -228,81 +230,21 @@ export function validateSpendingRules(
   return null;
 }
 
-export function validateAllowanceSchedule(
-  schedule: AllowanceSchedule,
-): SandboxError | null {
-  const amountProblem = amountError(schedule.amount);
-  if (amountProblem) return amountProblem;
-  if (schedule.frequency !== "weekly" && schedule.frequency !== "monthly") {
-    return { code: "invalid_rule", message: "Choose weekly or monthly." };
-  }
-  if (!Number.isInteger(schedule.weekday) || schedule.weekday < 0 || schedule.weekday > 6) {
-    return { code: "invalid_rule", message: "Choose a day of the week." };
-  }
-  if (
-    !Number.isInteger(schedule.dayOfMonth) ||
-    schedule.dayOfMonth < 1 ||
-    schedule.dayOfMonth > 28
-  ) {
-    return { code: "invalid_rule", message: "Choose a day between 1 and 28." };
-  }
-  return null;
-}
+// ── Pocket money cadence (the domain owns the calendar maths) ────
 
-// ── Allowance schedule preview ───────────────────────────────────
-
-export const WEEKDAY_NAMES = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-] as const;
-
-function ordinal(n: number): string {
-  const rem100 = n % 100;
-  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
-  switch (n % 10) {
-    case 1:
-      return `${n}st`;
-    case 2:
-      return `${n}nd`;
-    case 3:
-      return `${n}rd`;
-    default:
-      return `${n}th`;
-  }
-}
+export { WEEKDAY_NAMES } from "@/domain";
 
 /** "Every Monday" / "On the 1st of every month". */
-export function describeScheduleCadence(schedule: AllowanceSchedule): string {
-  return schedule.frequency === "weekly"
-    ? `Every ${WEEKDAY_NAMES[schedule.weekday] ?? "week"}`
-    : `On the ${ordinal(schedule.dayOfMonth)} of every month`;
+export function describeScheduleCadence(cadence: PocketMoneyCadence): string {
+  return describePocketMoneyCadence(cadence);
 }
 
 /**
- * The next payout date on or after `at`'s calendar day (Asia/
- * Kolkata), as "YYYY-MM-DD". Preview only — nothing auto-sends.
+ * The first occurrence on or after `at`'s calendar day (Asia/Kolkata),
+ * as "YYYY-MM-DD". A preview: nothing moves until an occurrence runs.
  */
-export function nextAllowanceDate(
-  schedule: AllowanceSchedule,
-  at: string,
-): string {
-  const [y, m, d] = dayKey(at).split("-").map(Number);
-  // Noon UTC keeps the calendar date stable while stepping days.
-  const cursor = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1, 12));
-  for (let i = 0; i < 62; i += 1) {
-    const matches =
-      schedule.frequency === "weekly"
-        ? cursor.getUTCDay() === schedule.weekday
-        : cursor.getUTCDate() === schedule.dayOfMonth;
-    if (matches) return cursor.toISOString().slice(0, 10);
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return cursor.toISOString().slice(0, 10);
+export function nextAllowanceDate(cadence: PocketMoneyCadence, at: string): string {
+  return firstOccurrenceOnOrAfter(cadence, dayKey(at));
 }
 
 /** Resolves a user's short name, tolerating unknown ids. */

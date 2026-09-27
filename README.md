@@ -2,8 +2,8 @@
 
 A money platform for teenagers and their families — receive pocket money, manage a balance, save toward goals, and pay trusted people. TeenPay is designed for teens first: calm, clear, and safe, without asking a teenager to juggle a traditional bank account.
 
-> **Status: Phase 6 — Money Spaces & goals (sandbox).**
-> On top of Phase 5 (account-owned wallets, one append-only double-entry ledger, idempotent operations with references, wallet freeze): **Money Spaces** — a default Save, goals with a target and optional date, and custom spaces — whose balances are **derived from the same ledger** (no second ledger, no stored balance). Moving money in or out is an idempotent, referenced (`SPC-`) operation through `postOperation`; only **available** money can be spent; a guardian sees totals, never a teen's Space details; storage schema v5, migrated from every earlier phase.
+> **Status: Phase 7 — Pocket Money Autopilot (sandbox).**
+> On top of Phase 6 (account-owned wallets, one append-only double-entry ledger, idempotent referenced operations, ledger-derived Money Spaces): a linked parent can schedule **recurring pocket money** — weekly or monthly, with a start and optional end date — that pays from the parent's wallet to the teen's through the same `postOperation` engine, one atomic `ALW-` operation per transfer day. Execution is explicit (no timers); each occurrence pays **at most once, ever**; low balances or frozen wallets fail an occurrence safely without moving money; pause, resume, cancel and end dates are first-class. Storage schema v6, migrated from every earlier phase.
 >
 > **No real authentication provider is active.** "Continue as Teen / Parent" starts a sandbox session on this device — no password, no OTP, no verification.
 >
@@ -59,7 +59,8 @@ src/
     money/        # Money screen (available, spaces, space activity, actions)
     spaces/       # Space card, detail, create/edit, add/move back, archive
     wallet/       # Wallet status card (freeze), frozen banner, balance announcer
-    parent/       # Parent dashboard, rules + schedule forms
+    parent/       # Parent dashboard, rules form, one-off pocket money
+    pocket-money/ # Pocket money schedules: parent section + form, teen card
     family/       # Family views, approval cards, rules summary, disconnect
     auth/         # Sign-in, create-account, auth gate + frame, sandbox notice
     sandbox/      # Sandbox role switcher + role gate
@@ -69,9 +70,10 @@ src/
   domain/         # Domain types: user/account, family, permissions,
                   # security, money (validation), wallet, space,
                   # transaction, recipient, request, ledger,
-                  # safety, approval, events, notification
+                  # safety, approval, events, notification, allowance
   sandbox/        # The sandbox: engine, operations, rules, transitions,
-                  # space-transitions, family-transitions, events,
+                  # space-transitions, allowance-transitions,
+                  # family-transitions, events,
                   # identity, seed, scope,
                   # authorization, accounts, selectors, persistence,
                   # repository, and the React store
@@ -90,12 +92,12 @@ UI actions ──▶ store (useSandbox) ──▶ pure transitions ──▶ val
 
 - **`src/sandbox/engine.ts`** — pure, side-effect-free rules: whole-rupee positive amounts (one check in `domain/money.ts`), the ₹10,000 per-move sandbox cap, INR only, type/direction/counterparty consistency, and the per-wallet no-negative-balance rule. Entries are frozen and appended idempotently.
 - **`src/sandbox/operations.ts`** — `postOperation`, the only way to write ledger entries (Phase 5, below).
-- **`src/sandbox/transitions.ts`** — pure state transitions: `pay`, approvals, `createRequest`, `respondRequest` (only "paid" touches the ledger), `sendAllowance`, sandbox refunds, wallet freeze, notifications. Money Space transitions live in `space-transitions.ts` (Phase 6).
+- **`src/sandbox/transitions.ts`** — pure state transitions: `pay`, approvals, `createRequest`, `respondRequest` (only "paid" touches the ledger), `sendAllowance`, sandbox refunds, wallet freeze, notifications. Money Space transitions live in `space-transitions.ts` (Phase 6); recurring pocket money in `allowance-transitions.ts` (Phase 7).
 - **`src/sandbox/store.tsx`** — the single client-side boundary. Components never touch localStorage or the ledger directly; they consume typed state and actions from `useSandbox()`. A future real backend can implement exactly this contract over an API.
 - **Derived, never stored** — the available balance, every Money Space balance, goal progress, activity, the pending-requests list, and notification counts are all computed from ledger entries on render. There is no "current balance" field anywhere.
 - **Money Spaces** — available = what can be spent; Spaces (Save, goals, custom) hold money set aside inside the same wallet; total = available + Spaces. Upcoming = pending requests (expecting money never increases the balance). See Phase 6.
 - **Idempotency** — the Pay flow generates one idempotency key when you reach review; double-confirming replays it and can never create a second payment.
-- **Persistence** — one versioned localStorage key (`teenpay-sandbox-v1`, schema v5 since Phase 6), validated and migrated on load. Unreadable data is backed up, never silently dropped (see Phase 4).
+- **Persistence** — one versioned localStorage key (`teenpay-sandbox-v1`, schema v6 since Phase 7), validated and migrated on load. Unreadable data is backed up, never silently dropped (see Phase 4).
 - **Reset** — **Profile → Reset sandbox data** (with confirmation) restores the initial state: ledger, requests, notifications, and balances. Your theme preference is kept.
 - **Fictional family** — teen Aarav Sharma (`@aarav`), parent Priya Sharma (`@priya`). See Phase 3 below.
 
@@ -297,6 +299,82 @@ The v5 validator refuses tampered data (entries naming unknown or foreign Spaces
 
 **Limitations.** Sandbox only. One device, no sync. Spaces can't be reordered in the UI yet (`displayOrder` is modelled). There are no shared or family Spaces, no recurring or automatic moves, and no interest. A guardian sees only totals — there is no opt-in sharing of Space details yet.
 
+## Phase 7 — Pocket Money Autopilot
+
+**Status.** Complete (sandbox). A linked parent can set up recurring pocket money that really moves (fictional) money on the sandbox ledger. There is still no bank, UPI, card, payment provider, recurring debit mandate, external scheduler or real money.
+
+**Architecture.** One domain module and one transition module, on the existing engine.
+- `domain/allowance.ts` — the schedule and run types, calendar maths on `YYYY-MM-DD` keys (Asia/Kolkata), the only plan validation (`validatePocketMoneyInput`), copy (`describePocketMoneyCadence`, status labels) and derived facts (`upcomingOccurrence`, `nextOccurrenceOf`).
+- `sandbox/allowance-transitions.ts` — `createPocketMoneySchedule`, `updatePocketMoneySchedule`, `pause…`, `resume…`, `cancel…` and `executeDuePocketMoney`. Every transfer is an `allowanceRunDraft` posted through `postOperation`. There is no second ledger and no second engine.
+- `sandbox/selectors.ts` — `selectSchedulesForParent`, `selectSchedulesForTeen`, `selectActiveSchedules`, `selectPausedSchedules`, `selectOpenSchedule`, `selectUpcomingPocketMoney`, `selectNextPocketMoney`, `selectScheduleSummary` (cadence, status, next date, total paid, successes, failures, last run), `selectScheduleHistory`, `selectPocketMoneyExecutions`, `selectPocketMoneyTotals` (received / sent, from ledger entries).
+- Store actions (`useSandbox().actions`): `createPocketMoneySchedule`, `updatePocketMoneySchedule`, `pausePocketMoneySchedule`, `resumePocketMoneySchedule`, `cancelPocketMoneySchedule`, `executeDuePocketMoney`. Each returns a typed `SandboxResult`.
+
+**Schedule model.** `id, familyId, parentAccountId, teenAccountId, sourceWalletId, destinationWalletId, amount` (whole rupees), `currency` (INR), `frequency weekly | monthly, dayOfWeek` (0–6), `dayOfMonth` (1–28, so every month has the day), `startDate, endDate?, nextRunAt` (00:00 IST of the next transfer day; null unless active), `status active | paused | completed | cancelled, endedReason?` (cancelled / family_disconnected / end_date_reached), `createdAt, updatedAt, lastRunAt?, createdBy, version, linkedAt` (the family link it was created under) and an append-only `runs[]`. A run is `{ id, occurrence, status completed | failed, amount, at, operationId?, reference?, reason?, message?, missed? }`. Money is never stored on the schedule: balances and totals come from the ledger.
+
+**Execution.** Nothing runs on a timer. `executeDuePocketMoney({ asOf })` is called explicitly (the parent's "Process next transfer" sandbox control passes the next transfer day). For each active schedule of the acting parent that is due by `asOf`, it:
+1. re-authorizes the parent;
+2. picks the occurrence (see the missed policy);
+3. checks both wallets and the parent's available balance;
+4. posts one `allowance` operation, id `<scheduleId>:<YYYY-MM-DD>`, with a debit of the parent's wallet and a credit of the teen's, a stable `ALW-XXXXXXXX` reference, and the schedule id and occurrence on both legs;
+5. records the run and advances `nextRunAt`;
+6. notifies.
+
+A run is "completed" only when `postOperation` accepted both legs. A scheduled credit reads **"Pocket money received"** ("Scheduled · From Priya") in Activity, and the parent's debit reads "Scheduled pocket money to Aarav". The transaction detail shows the reference, status and a **"Scheduled for"** row. Manual one-off pocket money is unchanged.
+
+**Idempotency.** The execution id *is* the operation id, so one occurrence can only ever produce one operation: `postOperation` treats a same-fingerprint replay as a no-op and refuses anything else. A second call for a processed day finds the recorded run (or the operation) and reports `already_processed` without posting. This holds for a repeated call, a retry after success or failure, a refresh, a stale parent screen, a stale copy of the schedule and two attempts from the same snapshot. The create form generates one id per intent, so a double submit creates one schedule. Edits and lifecycle actions carry the version the screen loaded. A change made meanwhile is refused as `stale_schedule`, while repeating an action that is already in effect is a harmless no-op.
+
+**Missed-schedule policy.** When several transfer days have passed without execution (the app was closed), only the **latest** due occurrence (on or before `asOf`, never past the end date) is paid, once. The skipped days are counted on that run (`missed`) and shown in the parent's history ("2 earlier days were missed and not paid"). They are never back-paid, which keeps a long absence from draining the parent's wallet in one go.
+
+**Insufficient funds.** If the parent's available balance is below the amount, nothing is posted: no partial payment, no negative balance. The occurrence is recorded as **failed** with "Pocket money couldn't be sent because the parent's available balance was too low." It is **not retried**; the schedule stays active and moves on to the next transfer day. The parent is notified with that message. The teen gets a neutral "didn't arrive" and never sees the parent's balance reason (runs are redacted in the teen's view). A failed run is shown as "Not sent", never as received.
+
+**Frozen wallets.** A frozen (or closed) **source** fails the occurrence the same way. For a frozen or closed **destination** the policy is also to fail that occurrence: nothing leaves the parent's wallet, there is never a single leg, and the money isn't parked anywhere. After unfreezing, the next transfer day pays normally.
+
+**Pause, resume, cancel, edit, end date.**
+- Pause stops execution (`nextRunAt` cleared); the schedule stays visible to both.
+- Resume schedules the next valid occurrence from today and never back-pays paused days. If none remains before the end date, the schedule completes.
+- Cancel ends it for good; its runs and ledger entries stay.
+- Edits change future transfers only. The start date is fixed once a transfer has run.
+- With an end date, the final eligible occurrence is paid, then the status becomes **"Schedule completed"**. Nothing is ever deleted.
+- Disconnecting the family ends open schedules (`family_disconnected`), without a notification storm.
+
+**Authorization.** Checked in the engine and again at the repository boundary; the UI role and client-sent ids are never trusted.
+- Only an active parent, actively linked to the teen, may create a schedule. The payer comes from the session, and both wallets are derived: the source is the parent's own primary wallet, the destination the teen's. Any client-sent `parentAccountId`, `sourceWalletId`, `destinationWalletId` or other teen is rejected (`not_permitted`).
+- Only the paying parent may edit, pause, resume, cancel or execute, and only under the same link it was created with.
+- A teen can never create or modify a parent-funded schedule.
+- Unrelated parents, other teens, a disconnected parent, unknown accounts and a signed-out stale screen are denied.
+- The merge refuses writes to schedules the viewer doesn't pay, deleting a schedule, changing its parties or wallets, reopening an ended one, versions that don't move forward, and rewriting run history. The one teen write it accepts is the cancellation their own disconnect performs.
+
+**Balances and rules.** Pocket money lands in the teen's **available** balance and is never auto-allocated to a Space. It is income, so it doesn't count toward the daily spending limit. Moving part of it into a Space is a separate `SPC-` operation.
+
+**Screens.**
+- **Parent → Pocket money** (on the parent page):
+  - the schedule card shows amount, cadence, status, the next transfer, sent so far, "Your wallet · ₹X available" and the end date;
+  - Edit / Pause or Resume / Cancel schedule (with confirmation);
+  - a clearly labelled sandbox "Process next transfer" control;
+  - a history of scheduled transfers (amount, teen, date, reference, Completed / Not sent) and past schedules;
+  - "Create pocket money" opens a dialog with Amount, How often, Day, Start date and End date (optional), plus a preview (amount, frequency, From, To, first and next transfer). The preview says nothing moves now.
+  - The one-off "Send once" form stays below.
+- **Teen → Family**: a read-only card with amount, cadence, "from Priya", status, next date (or paused), recent receipts (Received / Not sent) and total received.
+- **Teen → Home**: a compact "Next pocket money" line, shown only when one is scheduled.
+
+**Notifications.**
+- The parent: sent, not sent (with the reason), paused, resumed, completed.
+- The teen: scheduled / updated / stopped, paused, resumed, received, didn't arrive, completed.
+- Each is keyed to its event id, so a replay adds nothing.
+
+**Persistence.** Schema **v6** adds `pocketMoneySchedules`. On load v1 → … → v5 → v6 runs automatically, with the original payload backed up first. Each Phase 3–6 "recurring pocket money preview" saved on a teen's controls becomes a **paused** schedule (`pms_legacy_<teen>`): same amount and day, starting on the migration day, and never paid until the parent resumes it. It is skipped if the family is unlinked or the values are invalid. The old field is removed; the backup keeps it. The v6 validator refuses malformed or inconsistent data: bad fields, duplicate ids, two open schedules for one pair, completed runs without their ledger operation (or disagreeing with it), failed runs that point at money, and scheduled ledger entries without a recorded run. Such data is backed up and replaced by the seed. The seed has no schedules (the family starts unlinked). **Reset** is deterministic.
+
+**Tests** (`npm test`): 421 in total (32 files). Phase 7 adds 72:
+- `pocket-money-engine.test.ts` — domain calendar and validation, create, execution, idempotency, missed policy, insufficient funds, frozen source and destination, end date, pause/resume/cancel/edit, disconnect, balances, daily limit, Activity, notifications and selectors;
+- `pocket-money-security.test.tsx` — the repository boundary, forged records, teen redaction, and stale signed-out or switched-account screens;
+- `pocket-money-persistence.test.ts` — v5 → v6, reload, tampering, reset;
+- `pocket-money-ui.test.tsx` — create, validation, process, stale calls, pause/resume, edit, stale edit, cancel, failure display, the teen card and Home;
+- `phase7-journey.test.tsx` — a 28-step journey through the real app.
+
+All earlier tests were kept. The ones built on the old schedule preview now assert the same guarantees on the real schedule: "Every Monday" / "On the 1st of every month" copy, next dates, "Pocket money scheduled", day 31 rejected, teen denied, preview with no money moved, "No schedule set" and the parent's create button. Tests that pinned schema v5 now expect v6.
+
+**Limitations.** Sandbox only, one device, no sync. There is no background execution: occurrences run when the parent triggers them. A production system would run `executeDue` from a trusted server scheduler with the same idempotency key. Only weekly and monthly (days 1–28) are supported, with one open schedule per parent and teen and a fixed ₹10,000 per-transfer sandbox cap. There are no split allocations into Spaces and no teen-initiated requests to change pocket money.
+
 ## Design system
 
 All styling flows from the semantic tokens in `src/app/globals.css`:
@@ -328,5 +406,6 @@ Money is rendered exclusively through `AmountDisplay` (tabular numerals, INR for
 - **Phase 3** — sandbox identities & role switcher, invite-code family linking, parent dashboard, spending limits, approvals, allowance schedules, event-driven notifications
 - **Phase 4** — auth abstraction + sandbox sessions, sign-in/create-account, accounts & usernames, memberships & expiring invites, central permissions, repository layer, schema v3 migration
 - **Phase 5** — account-owned wallets, append-only double-entry ledger, idempotent operations with references, derived balances and transaction queries, wallet freeze, sandbox refunds, repository-level wallet isolation, schema v4 migration
-- **Phase 6 (this)** — Money Spaces: default Save, goals with target/date, custom spaces, ledger-derived Space balances, available vs allocated money, idempotent `SPC-` moves, archive with history, private-by-default Space details, schema v5 migration
+- **Phase 6** — Money Spaces: default Save, goals with target/date, custom spaces, ledger-derived Space balances, available vs allocated money, idempotent `SPC-` moves, archive with history, private-by-default Space details, schema v5 migration
+- **Phase 7 (this)** — Pocket Money Autopilot: weekly/monthly schedules from a parent's wallet to a linked teen's, explicit idempotent execution (one `ALW-` operation per transfer day), missed-day and insufficient-funds policies, freeze safety, pause/resume/cancel/end date, parent and teen screens, schema v6 migration
 - **Later (recommendation only)** — a real auth provider behind `AuthService` and a cloud repository behind the repository contract, then real payment rails with a regulated provider

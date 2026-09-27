@@ -1,7 +1,11 @@
 import type { ApprovalRequest } from "./approval";
 import type {
-  AllowanceSchedule,
+  PocketMoneyFailureReason,
+  PocketMoneySchedule,
+} from "./allowance";
+import type {
   ApprovalRule,
+  LegacyAllowancePreview,
   GuardianNotificationSettings,
   SpendingLimits,
 } from "./safety";
@@ -124,10 +128,46 @@ export type DomainEvent =
       teenId: string;
       notifications: GuardianNotificationSettings;
     })
+  /** Legacy (Phase 3 preview): readable in old logs, never emitted. */
   | (EventBase & {
       type: "allowance_schedule_updated";
       teenId: string;
-      schedule: AllowanceSchedule | null;
+      schedule: LegacyAllowancePreview | null;
+    })
+  // Pocket Money Autopilot (the ledger holds the money; these point at it)
+  | (EventBase & {
+      type: "pocket_money_schedule_changed";
+      scheduleId: string;
+      teenId: string;
+      guardianId: string;
+      change: "created" | "updated" | "paused" | "resumed" | "cancelled" | "completed";
+      /** A snapshot of the plan after the change (no money data). */
+      amount: number;
+      frequency: PocketMoneySchedule["frequency"];
+      dayOfWeek: number;
+      dayOfMonth: number;
+      endedReason?: PocketMoneySchedule["endedReason"];
+    })
+  | (EventBase & {
+      type: "pocket_money_paid";
+      scheduleId: string;
+      runId: string;
+      teenId: string;
+      guardianId: string;
+      amount: number;
+      reference: string;
+      occurrence: string;
+    })
+  | (EventBase & {
+      type: "pocket_money_failed";
+      scheduleId: string;
+      runId: string;
+      teenId: string;
+      guardianId: string;
+      amount: number;
+      occurrence: string;
+      reason: PocketMoneyFailureReason;
+      message: string;
     })
   // Approvals
   | (EventBase & { type: "approval_requested"; approval: ApprovalRequest })
@@ -151,6 +191,7 @@ export const FAMILY_EVENT_TYPES: ReadonlySet<DomainEventType> = new Set([
   "spending_limit_updated",
   "guardian_notifications_updated",
   "allowance_schedule_updated",
+  "pocket_money_schedule_changed",
   "approval_requested",
   "approval_approved",
   "approval_declined",

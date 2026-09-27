@@ -250,15 +250,31 @@ describe("parent dashboard", () => {
     );
   });
 
+  // Phase 7: "Set schedule" became "Create pocket money" — a real
+  // schedule with a fuller preview. Same guarantees: the preview
+  // shows amount, cadence and the next Monday; saving shows the plan;
+  // no money moves.
   it("previews a weekly pocket-money schedule", async () => {
     const user = userEvent.setup();
     preload(linkedState(), "parent");
     renderWith(<ParentContent />);
-    await user.click(screen.getByRole("button", { name: /set schedule/i }));
-    const dialog = screen.getByRole("dialog", { name: "Pocket money schedule" });
-    expect(within(dialog).getByText(/₹500 · Every Monday · next Mon, /)).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("button", { name: /save schedule/i }));
-    expect(screen.getByText("₹500 · Every Monday")).toBeInTheDocument();
+    expect(screen.getByText("No pocket money scheduled")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /create pocket money/i }));
+    const dialog = screen.getByRole("dialog", { name: "Create pocket money" });
+    const preview = within(dialog).getByRole("region", { name: "Preview" });
+    expect(preview).toHaveTextContent("₹500");
+    expect(preview).toHaveTextContent("Every Monday");
+    expect(preview).toHaveTextContent("Priya's wallet");
+    expect(preview).toHaveTextContent("Aarav's wallet");
+    expect(preview).toHaveTextContent(/First transfer\s*Mon, /);
+    expect(preview).toHaveTextContent(/Nothing moves now/);
+    await user.click(within(dialog).getByRole("button", { name: /create pocket money/i }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const section = screen.getByRole("region", { name: "Pocket money" });
+    expect(within(section).getByText("Pocket money to Aarav")).toBeInTheDocument();
+    expect(within(section).getByText("Every Monday")).toBeInTheDocument();
+    expect(within(section).getByText("Active")).toBeInTheDocument();
+    expect(screen.getByText(/Pocket money scheduled: ₹500 every Monday/)).toBeInTheDocument();
     // A schedule is a plan: no money moved.
     expect(probe("spend")).toBe("1850");
   });

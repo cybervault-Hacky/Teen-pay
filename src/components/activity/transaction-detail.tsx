@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { formatINR } from "@/lib/currency";
-import { formatFullDateTime } from "@/lib/format";
+import { formatDateKey, formatFullDateTime } from "@/lib/format";
 import { getTransaction, selectTeenWallet } from "@/sandbox/selectors";
 import { useSandbox } from "@/sandbox/store";
 import { AmountDisplay } from "@/components/ui/amount";
@@ -121,6 +121,9 @@ export function TransactionDetail({ entryId, onClose }: TransactionDetailProps) 
               </DetailRow>
             )}
             {tx.compensates && <DetailRow label="Refund of">{tx.compensates}</DetailRow>}
+            {tx.scheduledFor && (
+              <DetailRow label="Scheduled for">{formatDateKey(tx.scheduledFor)}</DetailRow>
+            )}
             {tx.compensatedBy.map((c) => (
               <DetailRow key={c.reference} label={c.kind === "refund" ? "Refunded" : "Reversed"}>
                 {formatINR(c.amount)} · {c.reference}
