@@ -1,70 +1,70 @@
 /**
- * User & family domain.
+ * Domain: accounts, roles & identities.
  *
- * TeenPay is a *family* product: a teen is never modelled as a generic
- * adult banking user. Teens belong to a family with at least one
- * parent/guardian who can fund, guide and set guardrails.
+ * TeenPay is not generic adult banking. The core relationship is
+ * teen ↔ parent/guardian within a family. Roles stay explicit so
+ * later phases never treat every user as a regular bank customer.
  *
- * Phase 1: types only. No auth, KYC or guardian verification yet —
- * those arrive with the backend in later phases.
+ * Phase 4: a `User` is an **account** — the product profile that a
+ * sign-in session points at. Credentials never live here: an auth
+ * provider owns those. In the sandbox there are no credentials at
+ * all, and nothing here is (or claims to be) verified.
  */
 
-export type UserId = string;
-export type FamilyId = string;
+export type UserRole = "teen" | "parent";
 
-export type UserKind = "teen" | "parent";
+/**
+ * Lifecycle of an account. Sandbox accounts are "active"; the other
+ * states exist so real account management can land without a
+ * redesign.
+ */
+export type UserStatus = "active" | "suspended" | "closed";
 
-/** Verification state of a parent/guardian (future backend concern). */
-export type GuardianVerification = "unverified" | "pending" | "verified";
+/**
+ * How the account's identity was established. Only "sandbox" exists
+ * today — a fictional profile with no verification of any kind.
+ */
+export type IdentitySource = "sandbox";
 
-interface BaseProfile {
-  id: UserId;
-  kind: UserKind;
-  displayName: string;
-  /** Avatar seed — initials are derived, no photos in Phase 1. */
-  avatarSeed: string;
-  familyId: FamilyId;
-  createdAt: string;
-}
-
-/** A teenager on TeenPay. Cannot link a bank account directly. */
-export interface TeenProfile extends BaseProfile {
-  kind: "teen";
-  /** Birth year only — never store full DOB client-side. */
-  birthYear: number;
-  /** Whether a verified guardian has approved the account. */
-  guardianApproved: boolean;
-}
-
-/** A parent or legal guardian. Funds teens and sets guardrails. */
-export interface ParentProfile extends BaseProfile {
-  kind: "parent";
-  relationship: "mother" | "father" | "guardian";
-  guardianVerification: GuardianVerification;
-}
-
-export type User = TeenProfile | ParentProfile;
-
-export function isTeen(user: User): user is TeenProfile {
-  return user.kind === "teen";
-}
-
-export function isParent(user: User): user is ParentProfile {
-  return user.kind === "parent";
-}
-
-/** A family links teens with their parents/guardians. */
-export interface Family {
-  id: FamilyId;
+export interface User {
+  /** Stable id — never reused, never derived from a name. */
+  id: string;
+  role: UserRole;
+  /**
+   * Provider-scoped sign-in identifier. Sandbox accounts use
+   * `sandbox:<username>`; no email or phone is collected in Phase 4.
+   */
+  identifier: string;
+  /** Full display name, e.g. "Aarav Sharma". */
   name: string;
-  teenIds: UserId[];
-  parentIds: UserId[];
+  /** Short, friendly name used in copy, e.g. "Aarav". */
+  displayName: string;
+  /** TeenPay ID without the "@", e.g. "aarav". Unique, lowercase. */
+  username: string;
+  /** Initials used by the Avatar component when no photo exists. */
+  avatarInitials: string;
+  status: UserStatus;
+  identitySource: IdentitySource;
+  /** ISO 8601 timestamps. */
   createdAt: string;
+  updatedAt: string;
+  /**
+   * Set when the account holder asked for deletion. Phase 4 only
+   * records the request — nothing is deleted, and financial
+   * history is never removed by it.
+   */
+  deletionRequestedAt?: string;
 }
 
-/** Aggregated view the UI renders (replaces N+1 fetches later). */
-export interface Household {
-  family: Family;
-  teens: TeenProfile[];
-  parents: ParentProfile[];
+/** The account a session belongs to. Same shape as `User`. */
+export type Account = User;
+
+/** "@aarav" — the one way a username is rendered. */
+export function formatUsername(user: Pick<User, "username">): string {
+  return `@${user.username}`;
+}
+
+/** Human label for a role, e.g. in badges. */
+export function roleLabel(role: UserRole): string {
+  return role === "teen" ? "Teen" : "Parent";
 }

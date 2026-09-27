@@ -1,44 +1,10 @@
-import type { Metadata } from "next";
-import { Container } from "@/components/shell";
-import { Reveal } from "@/components/ui";
-import {
-  ActivityPreview,
-  BalanceCard,
-  GoalPreview,
-  QuickActions,
-  RequestsPreview,
-  SpacesPreview,
-} from "@/components/home";
+import { HomeContent } from "@/components/home/home-content";
+import { RoleGate } from "@/components/sandbox/role-gate";
 
-export const metadata: Metadata = { title: "Home" };
-
-/** Home — balance, shortcuts, spaces, goal and recent activity. */
 export default function HomePage() {
   return (
-    <Container>
-      <div className="flex flex-col gap-7 pt-5 sm:pt-8">
-        <Reveal>
-          <BalanceCard />
-        </Reveal>
-        <Reveal delay={0.05}>
-          <QuickActions />
-        </Reveal>
-        <Reveal>
-          <RequestsPreview />
-        </Reveal>
-        <Reveal>
-          <SpacesPreview />
-        </Reveal>
-        <Reveal>
-          <GoalPreview />
-        </Reveal>
-        <Reveal>
-          <ActivityPreview />
-        </Reveal>
-        <p className="pb-2 text-center text-xs text-faint">
-          TeenPay Sandbox · Simulated money — nothing here is real.
-        </p>
-      </div>
-    </Container>
+    <RoleGate role="teen">
+      <HomeContent />
+    </RoleGate>
   );
 }

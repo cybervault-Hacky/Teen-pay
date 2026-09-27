@@ -1,0 +1,188 @@
+import type {
+  AppNotification,
+  ApprovalRequest,
+  DomainEvent,
+  Family,
+  LedgerEntry,
+  MoneyOperation,
+  MoneyRequest,
+  Recipient,
+  MoneySpace,
+  SecurityEvent,
+  User,
+  Wallet,
+} from "@/domain";
+
+/**
+ * Persisted schema versions:
+ * v1 — Phase 2 (ledger, requests, notifications, single family).
+ * v2 — Phase 3 (identities, session pointer, family links, controls,
+ *      approvals, per-recipient notifications, family event log).
+ * v3 — Phase 4 (multi-account database: accounts, families with
+ *      memberships + invites, per-teen wallets, security events).
+ *      The session moved out of data into the auth layer.
+ * v4 — Phase 5 (explicit wallets owned by accounts, one append-only
+ *      ledger whose entries carry walletId/operationId/reference,
+ *      and an operations log for audit + idempotency).
+ * v5 — Phase 6 (Money Spaces: space records owned by accounts;
+ *      Save/goal allocations became space_allocation/space_release
+ *      entries carrying a spaceId; goal records became goal Spaces).
+ */
+export const SANDBOX_SCHEMA_VERSION = 5;
+
+// Money limits live in the domain (one definition); re-exported here
+// for existing imports.
+export { MAX_SANDBOX_AMOUNT, MIN_SANDBOX_AMOUNT } from "@/domain/money";
+
+/** Upper bound for a guardian's daily limit. */
+export const MAX_DAILY_LIMIT = 50_000;
+
+/** How many family events the local log keeps. */
+export const FAMILY_EVENT_LOG_LIMIT = 100;
+
+/**
+ * Sandbox funds a new parent wallet starts with, so pocket money has
+ * somewhere to come from. Fictional money — clearly labelled.
+ */
+export const PARENT_STARTING_FUNDS = 10_000;
+
+/**
+ * Who a scoped view is for. Derived from the auth session each time
+ * a scope is built — never persisted with the data.
+ */
+export interface SandboxSession {
+  currentUserId: string;
+}
+
+/**
+ * Teen-owned, non-ledger money records: requests (move nothing until
+ * paid) and guardian approvals (move nothing until approved).
+ */
+export interface TeenRecords {
+  teenId: string;
+  requests: MoneyRequest[];
+  approvals: ApprovalRequest[];
+}
+
+/** Family-owned, non-financial activity log. */
+export interface FamilyLog {
+  familyId: string;
+  /** Newest first, capped. */
+  events: DomainEvent[];
+}
+
+/**
+ * The persisted sandbox database (schema v5), grouped by owner:
+ *  · accounts — profile
+ *  · families — relationships, permissions, settings
+ *  · wallets — one or more per account (status, never a balance)
+ *  · ledger — every wallet's entries, append-only
+ *  · operations — the audit + idempotency log for money actions
+ *  · spaces — Money Spaces, owned by an account, bound to a wallet
+ *    (settings only — a Space's balance is derived from the ledger)
+ *  · teenRecords — requests, approvals
+ *  · notifications (per recipient), security events (per account)
+ * A cloud repository would store the same records in separate tables.
+ */
+export interface SandboxDatabase {
+  version: typeof SANDBOX_SCHEMA_VERSION;
+  accounts: User[];
+  families: Family[];
+  wallets: Wallet[];
+  ledger: LedgerEntry[];
+  operations: MoneyOperation[];
+  spaces: MoneySpace[];
+  teenRecords: TeenRecords[];
+  notifications: AppNotification[];
+  familyLogs: FamilyLog[];
+  securityEvents: SecurityEvent[];
+  /** Shared directory of fictional recipients. */
+  recipients: Recipient[];
+}
+
+/**
+ * A scoped view of the database for one signed-in account: only the
+ * family it belongs to, the accounts in it, the wallets it may see
+ * (its own, plus a teen's if it's that teen's linked guardian) and
+ * its own notifications. Every transition runs on this view; the
+ * store merges results back into the database.
+ */
+export interface SandboxState {
+  /** Accounts visible in this scope (family members + the viewer). */
+  users: User[];
+  session: SandboxSession;
+  family: Family;
+  /** Wallets visible in this scope. */
+  wallets: Wallet[];
+  /**
+   * Entries of every visible wallet (each carries its walletId).
+   * Read through the wallet queries in `selectors`, never raw.
+   */
+  ledger: LedgerEntry[];
+  /** Operations touching a visible wallet (audit + idempotency). */
+  operations: MoneyOperation[];
+  /** Money requests (requests move nothing until paid). */
+  requests: MoneyRequest[];
+  /** Guardian approval requests (pending approvals move nothing). */
+  approvals: ApprovalRequest[];
+  /** Per-recipient notifications, newest first. */
+  notifications: AppNotification[];
+  /** Non-financial family/approval events, newest first (capped). */
+  familyEvents: DomainEvent[];
+  recipients: Recipient[];
+  /**
+   * The viewer's own Money Spaces (settings only; balances are
+   * derived from the ledger). Another account's Spaces — including a
+   * linked teen's, for a guardian — are never in scope.
+   */
+  spaces: MoneySpace[];
+}
+
+export type SandboxErrorCode =
+  | "invalid_amount"
+  | "insufficient_balance"
+  | "exceeds_sandbox_limit"
+  | "exceeds_daily_limit"
+  | "exceeds_transaction_limit"
+  | "duplicate"
+  | "unknown_recipient"
+  | "unknown_space"
+  | "space_archived"
+  | "insufficient_space_balance"
+  | "exceeds_space_target"
+  | "invalid_space"
+  | "invalid_target"
+  | "invalid_deadline"
+  | "space_limit_reached"
+  | "unknown_user"
+  | "invalid_transition"
+  | "entry_rejected"
+  | "not_permitted"
+  | "not_linked"
+  | "invalid_invite"
+  | "invite_expired"
+  | "invalid_rule"
+  | "invalid_account"
+  | "username_taken"
+  | "account_unavailable"
+  | "not_signed_in"
+  | "unsupported_currency"
+  | "unknown_wallet"
+  | "wallet_frozen"
+  | "wallet_closed"
+  | "not_refundable";
+
+/**
+ * A typed, human-readable error. `code` drives logic; `message`
+ * is safe to show verbatim in the UI.
+ */
+export interface SandboxError {
+  code: SandboxErrorCode;
+  message: string;
+  /** The form field a validation error belongs to, when there is one. */
+  field?: "name" | "icon" | "type" | "targetAmount" | "deadline" | "amount";
+}
+
+export type SandboxResult<T = undefined> =
+  | { ok: true; value: T }
+  | { ok: false; error: SandboxError };

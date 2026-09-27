@@ -1,0 +1,445 @@
+import {
+  isFamilyEvent,
+  type AppNotification,
+  type ApprovalRule,
+  type DomainEvent,
+  type GuardianNotificationSettings,
+  type NotificationKind,
+  type SpendingLimits,
+} from "@/domain";
+import { formatINR } from "@/lib/currency";
+import { activeControls, findUser } from "./identity";
+import { describeScheduleCadence } from "./rules";
+import { FAMILY_EVENT_LOG_LIMIT, type SandboxState } from "./types";
+
+/**
+ * The event projector.
+ *
+ * Transitions report what happened as `DomainEvent`s; this module
+ * is the only place those events become notifications (per
+ * recipient) and family-log entries. Notification copy therefore
+ * always matches a real domain change.
+ *
+ * Replays are safe: event and notification ids are deterministic,
+ * and anything already recorded is skipped.
+ */
+
+function nameOf(state: SandboxState, userId: string): string {
+  return findUser(state, userId)?.displayName ?? "Someone";
+}
+
+/** "Daily limit ₹500 · Up to ₹1,000 per payment · Approval above ₹500" */
+export function summarizeSpendingRules(
+  limits: SpendingLimits,
+  approval: ApprovalRule,
+): string {
+  const parts: string[] = [];
+  if (limits.dailyLimit !== null) {
+    parts.push(`Daily limit ${formatINR(limits.dailyLimit)}`);
+  }
+  if (limits.perTransactionLimit !== null) {
+    parts.push(`Up to ${formatINR(limits.perTransactionLimit)} per payment`);
+  }
+  if (approval.threshold !== null) {
+    parts.push(`Approval above ${formatINR(approval.threshold)}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "No spending rules are on.";
+}
+
+export function summarizeGuardianNotifications(
+  settings: GuardianNotificationSettings,
+): string {
+  const items = [
+    settings.payments ? "payments" : null,
+    settings.savings ? "savings" : null,
+    "approval requests",
+  ].filter((item): item is string => item !== null);
+  return items.join(", ");
+}
+
+interface Draft {
+  to: string;
+  kind: NotificationKind;
+  title: string;
+  body: string;
+}
+
+function drafts(state: SandboxState, event: DomainEvent): Draft[] {
+  switch (event.type) {
+    case "payment_sent": {
+      const out: Draft[] = [];
+      // Approved payments are announced by approval_approved instead.
+      if (!event.approvalId) {
+        out.push({
+          to: event.teenId,
+          kind: "money",
+          title: "Payment sent",
+          body: `${formatINR(event.amount)} to ${event.recipientName}${
+            event.note ? ` · ${event.note}` : ""
+          }.`,
+        });
+        const controls = activeControls(state, event.teenId);
+        const guardianId = state.family.links.find(
+          (l) => l.teenId === event.teenId,
+        )?.guardianId;
+        if (controls?.notifications.payments && guardianId) {
+          out.push({
+            to: guardianId,
+            kind: "money",
+            title: `${nameOf(state, event.teenId)} sent a payment`,
+            body: `${formatINR(event.amount)} to ${event.recipientName}.`,
+          });
+        }
+      }
+      return out;
+    }
+    case "request_created":
+      return [
+        {
+          to: event.actorId,
+          kind: "money",
+          title: "Request sent",
+          body: `You requested ${formatINR(event.amount)} from ${event.recipientName}${
+            event.note ? ` · ${event.note}` : ""
+          }.`,
+        },
+      ];
+    case "request_paid":
+      return [
+        {
+          to: event.actorId,
+          kind: "money",
+          title: "Request paid",
+          body: `${event.recipientName} paid ${formatINR(event.amount)}.`,
+        },
+      ];
+    case "allowance_sent":
+      return [
+        {
+          to: event.teenId,
+          kind: "money",
+          title: "Pocket money received",
+          body: `${formatINR(event.amount)} from ${nameOf(state, event.guardianId)} is in ${nameOf(state, event.teenId)}'s wallet.`,
+        },
+      ];
+    case "refund_received":
+      return [
+        {
+          to: event.teenId,
+          kind: "money",
+          title: "Refund received",
+          body: `${formatINR(event.amount)} from ${event.fromName} is back in your wallet · ${event.reference}.`,
+        },
+      ];
+    case "wallet_frozen":
+    case "wallet_unfrozen": {
+      // Tell the other side: the teen when a guardian acts, the linked
+      // guardian when the teen acts. The actor sees it on screen.
+      const guardianId = state.family.links.find(
+        (l) => l.teenId === event.teenId && l.status === "linked",
+      )?.guardianId;
+      const to = event.actorId === event.teenId ? guardianId : event.teenId;
+      if (!to) return [];
+      const teen = nameOf(state, event.teenId);
+      const who = event.actorId === event.teenId ? teen : nameOf(state, event.actorId);
+      return [
+        event.type === "wallet_frozen"
+          ? {
+              to,
+              kind: "safety",
+              title: "Wallet frozen",
+              body: `${who} froze ${teen}'s sandbox wallet. Balance and history stay visible; no money can move until it's unfrozen.`,
+            }
+          : {
+              to,
+              kind: "safety",
+              title: "Wallet unfrozen",
+              body: `${who} unfroze ${teen}'s sandbox wallet. Money can move again.`,
+            },
+      ];
+    }
+    case "savings_moved": {
+      // Guardians who opted in hear that money was set aside — never
+      // which Space, its name or its target (those stay private).
+      if (event.direction !== "in") return [];
+      const controls = activeControls(state, event.teenId);
+      const guardianId = state.family.links.find(
+        (l) => l.teenId === event.teenId,
+      )?.guardianId;
+      if (!controls?.notifications.savings || !guardianId) return [];
+      return [
+        {
+          to: guardianId,
+          kind: "goal",
+          title: "Saving progress",
+          body: `${nameOf(state, event.teenId)} set aside ${formatINR(event.amount)} in a Money Space.`,
+        },
+      ];
+    }
+    case "space_goal_reached":
+      return [
+        {
+          to: event.teenId,
+          kind: "goal",
+          title: "Goal reached",
+          body: `${event.spaceName} has reached its ${formatINR(event.target)} target. Nothing moves automatically — the money stays in the goal until you move it.`,
+        },
+      ];
+    case "space_archived":
+      return [
+        {
+          to: event.teenId,
+          kind: "goal",
+          title: "Space archived",
+          body:
+            event.returned > 0
+              ? `${event.spaceName} was archived and ${formatINR(event.returned)} moved back to your available balance. Its history stays in Activity.`
+              : `${event.spaceName} was archived. Its history stays in Activity.`,
+        },
+      ];
+    case "family_invite_created":
+    case "family_invite_cancelled":
+      return [];
+    case "family_invite_claimed":
+      return [
+        {
+          to: event.teenId,
+          kind: "family",
+          title: "Invite being reviewed",
+          body: `${nameOf(state, event.guardianId)} entered your invite code and is reviewing it.`,
+        },
+      ];
+    case "family_linked":
+      return [
+        {
+          to: event.teenId,
+          kind: "family",
+          title: "Family connected",
+          body: `${nameOf(state, event.guardianId)} is connected as your parent/guardian.`,
+        },
+        {
+          to: event.guardianId,
+          kind: "family",
+          title: "Family connected",
+          body: `You're connected with ${nameOf(state, event.teenId)}. Family controls are now available.`,
+        },
+      ];
+    case "family_unlinked": {
+      const cancelled =
+        event.cancelledApprovals > 0
+          ? ` ${event.cancelledApprovals === 1 ? "A pending approval was" : `${event.cancelledApprovals} pending approvals were`} cancelled.`
+          : "";
+      return [
+        {
+          to: event.teenId,
+          kind: "family",
+          title: "Family disconnected",
+          body: `${nameOf(state, event.guardianId)} is no longer connected. Your money and activity history are unchanged.${cancelled}`,
+        },
+        {
+          to: event.guardianId,
+          kind: "family",
+          title: "Family disconnected",
+          body: `You're no longer connected with ${nameOf(state, event.teenId)}.${cancelled}`,
+        },
+      ];
+    }
+    case "spending_limit_updated":
+      return [
+        {
+          to: event.teenId,
+          kind: "safety",
+          title: "Spending rules updated",
+          body: `${nameOf(state, event.actorId)} updated your rules: ${summarizeSpendingRules(event.limits, event.approval)}`,
+        },
+      ];
+    case "guardian_notifications_updated":
+      return [
+        {
+          to: event.teenId,
+          kind: "family",
+          title: "Parent notifications updated",
+          body: `${nameOf(state, event.actorId)} is notified about ${summarizeGuardianNotifications(event.notifications)}.`,
+        },
+      ];
+    case "allowance_schedule_updated":
+      return [
+        {
+          to: event.teenId,
+          kind: "money",
+          title: event.schedule
+            ? "Pocket money scheduled"
+            : "Pocket money schedule removed",
+          body: event.schedule
+            ? `${formatINR(event.schedule.amount)} · ${describeScheduleCadence(event.schedule)} (sandbox preview).`
+            : `${nameOf(state, event.actorId)} removed the recurring pocket money preview.`,
+        },
+      ];
+    case "approval_requested": {
+      const a = event.approval;
+      return [
+        {
+          to: a.teenId,
+          kind: "approval",
+          title: "Approval requested",
+          body: `Your ${formatINR(a.amount)} payment to ${a.recipientName} is waiting for ${nameOf(state, a.guardianId)}.`,
+        },
+        {
+          to: a.guardianId,
+          kind: "approval",
+          title: "New approval request",
+          body: `${nameOf(state, a.teenId)} wants to send ${formatINR(a.amount)} to ${a.recipientName}.`,
+        },
+      ];
+    }
+    case "approval_approved": {
+      const a = event.approval;
+      return [
+        {
+          to: a.teenId,
+          kind: "approval",
+          title: "Payment approved",
+          body: `${nameOf(state, a.guardianId)} approved ${formatINR(a.amount)} to ${a.recipientName}. It's been sent.`,
+        },
+      ];
+    }
+    case "approval_declined": {
+      const a = event.approval;
+      return [
+        {
+          to: a.teenId,
+          kind: "approval",
+          title: "Payment not approved",
+          body: `${nameOf(state, a.guardianId)} declined ${formatINR(a.amount)} to ${a.recipientName}. No money moved.`,
+        },
+      ];
+    }
+    case "approval_cancelled": {
+      const a = event.approval;
+      // System cancellations (e.g. disconnect) are covered by that event.
+      if (event.actorId !== a.teenId || a.cancelReason) return [];
+      return [
+        {
+          to: a.guardianId,
+          kind: "approval",
+          title: "Approval request withdrawn",
+          body: `${nameOf(state, a.teenId)} cancelled the ${formatINR(a.amount)} request to ${a.recipientName}.`,
+        },
+      ];
+    }
+  }
+}
+
+export function notificationsForEvent(
+  state: SandboxState,
+  event: DomainEvent,
+): AppNotification[] {
+  return drafts(state, event).map((draft) => ({
+    id: `ntf_${event.id}_${draft.to}`,
+    recipientId: draft.to,
+    kind: draft.kind,
+    title: draft.title,
+    body: draft.body,
+    read: false,
+    createdAt: event.at,
+  }));
+}
+
+/**
+ * Applies events to state: new notifications for each recipient,
+ * and family/approval events appended to the (capped) family log.
+ * Never touches the ledger.
+ */
+export function commitEvents(
+  state: SandboxState,
+  events: DomainEvent[],
+): SandboxState {
+  let next = state;
+  for (const event of events) {
+    const known = new Set(next.notifications.map((n) => n.id));
+    const fresh = notificationsForEvent(next, event).filter(
+      (n) => !known.has(n.id),
+    );
+    const log =
+      isFamilyEvent(event) && !next.familyEvents.some((e) => e.id === event.id)
+        ? [event, ...next.familyEvents].slice(0, FAMILY_EVENT_LOG_LIMIT)
+        : next.familyEvents;
+    if (fresh.length === 0 && log === next.familyEvents) continue;
+    next = {
+      ...next,
+      notifications: [...fresh, ...next.notifications],
+      familyEvents: log,
+    };
+  }
+  return next;
+}
+
+/** Display copy for one family-log entry, from the viewer's side. */
+export function describeFamilyEvent(
+  state: SandboxState,
+  event: DomainEvent,
+  viewerId: string,
+): { title: string; detail: string } {
+  const you = (userId: string) =>
+    userId === viewerId ? "You" : nameOf(state, userId);
+  switch (event.type) {
+    case "family_invite_created":
+      return { title: "Invite code created", detail: `${you(event.actorId)} created ${event.code}` };
+    case "family_invite_cancelled":
+      return { title: "Invite cancelled", detail: `${you(event.actorId)} cancelled the invite` };
+    case "family_invite_claimed":
+      return { title: "Invite entered", detail: `${you(event.guardianId)} entered the invite code` };
+    case "family_linked":
+      return {
+        title: "Family connected",
+        detail: `${nameOf(state, event.guardianId)} connected as parent/guardian`,
+      };
+    case "family_unlinked":
+      return { title: "Family disconnected", detail: `${you(event.actorId)} disconnected` };
+    case "spending_limit_updated":
+      return {
+        title: "Spending rules updated",
+        detail: summarizeSpendingRules(event.limits, event.approval),
+      };
+    case "guardian_notifications_updated":
+      return {
+        title: "Parent notifications updated",
+        detail: `Notified about ${summarizeGuardianNotifications(event.notifications)}`,
+      };
+    case "allowance_schedule_updated":
+      return {
+        title: event.schedule ? "Pocket money scheduled" : "Schedule removed",
+        detail: event.schedule
+          ? `${formatINR(event.schedule.amount)} · ${describeScheduleCadence(event.schedule)}`
+          : "Recurring pocket money preview removed",
+      };
+    case "approval_requested":
+      return {
+        title: "Approval requested",
+        detail: `${formatINR(event.approval.amount)} to ${event.approval.recipientName}`,
+      };
+    case "approval_approved":
+      return {
+        title: "Approval given",
+        detail: `${formatINR(event.approval.amount)} to ${event.approval.recipientName}`,
+      };
+    case "approval_declined":
+      return {
+        title: "Approval declined",
+        detail: `${formatINR(event.approval.amount)} to ${event.approval.recipientName}`,
+      };
+    case "approval_cancelled":
+      return {
+        title: "Approval cancelled",
+        detail: `${formatINR(event.approval.amount)} to ${event.approval.recipientName}${
+          event.approval.cancelReason ? ` · ${event.approval.cancelReason}` : ""
+        }`,
+      };
+    case "wallet_frozen":
+      return { title: "Wallet frozen", detail: `${you(event.actorId)} froze ${nameOf(state, event.teenId)}'s wallet` };
+    case "wallet_unfrozen":
+      return { title: "Wallet unfrozen", detail: `${you(event.actorId)} unfroze ${nameOf(state, event.teenId)}'s wallet` };
+    default:
+      return { title: "Update", detail: "" };
+  }
+}
