@@ -41,8 +41,10 @@ import { FavouritesList } from "@/components/contacts/favourites-list";
  *   6. actions (create a goal or a space)
  * Every figure is derived from the ledger through selectors; every
  * move goes through the store into the one ledger write path.
+ * `banner` (optional) is shown under the header — e.g. a learning
+ * note; it changes nothing on the screen.
  */
-export function MoneyContent() {
+export function MoneyContent({ banner }: { banner?: React.ReactNode } = {}) {
   const { state, contacts } = useSandbox();
   // Only the id is kept, so the sheet always sees the live Space.
   const [move, setMove] = useState<{ spaceId: string; direction: MoveDirection } | null>(null);
@@ -67,6 +69,7 @@ export function MoneyContent() {
         description="Every number here is derived from the sandbox ledger."
         actions={<Badge tone="warning">Sandbox</Badge>}
       />
+      {banner}
 
       <div className="space-y-6">
         {wallet && (

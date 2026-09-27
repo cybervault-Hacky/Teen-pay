@@ -2,6 +2,8 @@ import {
   checkMoney,
   CONTACT_LIMIT,
   defaultSaveSpaceId,
+  MISSION_PROGRESS_KEYS,
+  missionById,
   PEER_NOTE_MAX,
   peerRequestExpiresAt,
   isOpenSchedule,
@@ -747,7 +749,9 @@ function isContactRecord(value: unknown, accounts: Map<unknown, UnknownRecord>, 
  * Schema v8 — the only shape that is saved. Everything v7 checks (see
  * `peerIntegrity`), plus favourites: every contact valid (see
  * `isContactRecord`), ids unique, no one saved twice by the same
- * owner, at most CONTACT_LIMIT per owner.
+ * owner, at most CONTACT_LIMIT per owner. Plus Money Missions
+ * progress when present (optional, additive — see
+ * `missionProgressIntegrity`).
  */
 export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
   if (!isRecord(value) || value.version !== SANDBOX_SCHEMA_VERSION) return false;
@@ -765,7 +769,51 @@ export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
     if (count > CONTACT_LIMIT) return false;
     perOwner.set(c.ownerAccountId, count);
   }
+  return missionProgressIntegrity(value);
+}
+
+const MISSION_KEYS = new Set<string>(MISSION_PROGRESS_KEYS);
+
+/**
+ * One stored mission progress record (Phase 11): only the known keys
+ * (a smuggled balance, answer, wallet id or reward is rejected), owned
+ * by a real teen account, for a mission in the catalog, with a whole
+ * step count in range, `completedAt` present exactly when every step
+ * is done, and ordered timestamps.
+ */
+function isMissionProgressRecord(value: unknown, accounts: Map<unknown, UnknownRecord>): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.some((k) => !MISSION_KEYS.has(k))) return false;
+  const owner = accounts.get(value.ownerAccountId);
+  if (!owner || owner.role !== "teen") return false;
+  const mission = missionById(value.missionId);
+  if (!mission) return false;
+  const steps = value.stepsCompleted;
+  if (typeof steps !== "number" || !Number.isInteger(steps) || steps < 0 || steps > mission.steps.length) return false;
+  if (!isIsoInstant(value.startedAt) || !isIsoInstant(value.updatedAt)) return false;
+  if (Date.parse(value.updatedAt) < Date.parse(value.startedAt)) return false;
+  const finished = steps === mission.steps.length;
+  if (finished !== (value.completedAt !== undefined)) return false;
+  if (value.completedAt !== undefined) {
+    if (!isIsoInstant(value.completedAt)) return false;
+    const at = Date.parse(value.completedAt);
+    if (at < Date.parse(value.startedAt) || at > Date.parse(value.updatedAt)) return false;
+  }
   return true;
+}
+
+/**
+ * Mission progress is optional and additive in v8: absent is fine (no
+ * mission started). When present it must be a list of valid records,
+ * at most one per teen per mission.
+ */
+function missionProgressIntegrity(value: UnknownRecord): boolean {
+  if (value.missionProgress === undefined) return true;
+  const accounts = new Map((value.accounts as UnknownRecord[]).map((a) => [a.id, a]));
+  if (!isArrayOf(value.missionProgress, (r) => isMissionProgressRecord(r, accounts))) return false;
+  const records = value.missionProgress as UnknownRecord[];
+  return new Set(records.map((r) => `${String(r.ownerAccountId)}|${String(r.missionId)}`)).size === records.length;
 }
 
 /** A Phase 3 (v2) payload. */

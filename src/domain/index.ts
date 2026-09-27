@@ -6,7 +6,7 @@
  * transactions,
  * recipients, payments, requests, TeenPay-to-TeenPay transfers and
  * money requests, TeenPay QR identities, favourites, the ledger, guardian controls,
- * approvals, domain events, notifications, and the read-only Money Coach. UI code imports from `@/domain`, never from
+ * approvals, domain events, notifications, the read-only Money Coach, and Money Missions. UI code imports from `@/domain`, never from
  * deeper places, so a future backend can be added without
  * touching the screens.
  */
@@ -31,3 +31,4 @@ export * from "./permissions";
 export * from "./security";
 export * from "./money";
 export * from "./coach";
+export * from "./mission";

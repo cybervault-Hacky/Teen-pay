@@ -3,8 +3,10 @@
 import {
   AlertTriangle,
   AtSign,
+  Compass,
   Gauge,
   Info,
+  ListChecks,
   QrCode,
   RotateCcw,
   Shield,
@@ -65,6 +67,8 @@ export function ProfileContent() {
   const membership = account.familyMembership;
   const controls = controlsTeen ? selectControls(state, controlsTeen.id) : null;
   const status = linkCopy[link?.status ?? "not_linked"];
+  // Teens only (a parent never sees a teen's mission progress).
+  const missions = isTeen ? actions.missionBoard() : null;
 
   const familySubtitle = isTeen
     ? guardian
@@ -150,6 +154,30 @@ export function ProfileContent() {
                   : `${contacts.list.length} saved`
               }
               href="/contacts"
+            />
+          </Card>
+        </section>
+      )}
+
+      {isTeen && (
+        <section aria-label="Learn">
+          <SectionHeader title="Learn" />
+          <Card className="divide-y divide-line p-2">
+            <ListRow
+              icon={Compass}
+              title="Money Coach"
+              subtitle="A read-only look at your own money"
+              href="/coach"
+            />
+            <ListRow
+              icon={ListChecks}
+              title="Money Missions"
+              subtitle={
+                missions?.ok
+                  ? `${missions.value.completed} of ${missions.value.total} completed`
+                  : "Short, optional lessons"
+              }
+              href="/missions"
             />
           </Card>
         </section>
@@ -256,8 +284,9 @@ export function ProfileContent() {
       <Modal open={resetOpen} onClose={() => setResetOpen(false)} title="Reset sandbox data?">
         <p className="text-sm leading-relaxed text-ink-muted">
           This restores the initial demo state: sandbox accounts you created,
-          the ledger, family connection, rules, approvals, notifications, and
-          balances all return to where they started. You&apos;ll be signed out.
+          the ledger, family connection, rules, approvals, notifications,
+          balances and Money Missions progress all return to where they
+          started. You&apos;ll be signed out.
           Your theme preference is kept.
         </p>
         <div className="mt-5 flex gap-2.5">

@@ -21,6 +21,8 @@ export type Permission =
   | "payments.simulate_refund"
   /** Phase 9: keep one's own favourites (convenience only — never authority). */
   | "contacts.manage"
+  /** Phase 11: work through one's own Money Missions (learning progress only — never money). */
+  | "missions.use"
   // Guardian — a connected teen's money
   | "family.join"
   | "teen.view_overview"
@@ -45,6 +47,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "wallet.freeze_own",
     "payments.simulate_refund",
     "contacts.manage",
+    "missions.use",
     "family.disconnect",
   ],
   parent: [
@@ -77,6 +80,7 @@ export const TEEN_SELF_PERMISSIONS: readonly Permission[] = [
   "wallet.freeze_own",
   "payments.simulate_refund",
   "contacts.manage",
+  "missions.use",
 ];
 
 /** Permissions that need an active, linked guardian of the teen. */

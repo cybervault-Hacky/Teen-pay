@@ -1,4 +1,6 @@
+import { Suspense } from "react";
 import { MoneyContent } from "@/components/money/money-content";
+import { MoneyScreen } from "@/components/missions/mission-screens";
 import { RoleGate } from "@/components/sandbox/role-gate";
 
 export const metadata = {
@@ -9,7 +11,9 @@ export const metadata = {
 export default function MoneyPage() {
   return (
     <RoleGate role="teen">
-      <MoneyContent />
+      <Suspense fallback={<MoneyContent />}>
+        <MoneyScreen />
+      </Suspense>
     </RoleGate>
   );
 }

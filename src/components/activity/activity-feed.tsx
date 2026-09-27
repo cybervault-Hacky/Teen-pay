@@ -52,8 +52,12 @@ interface FeedRow {
  * transactions, and nothing has moved. Search and filters operate
  * on real local state. Family/approval events live in their own
  * view so they never look like money movement.
+ *
+ * `onOpenTransaction` (optional) is told when the teen opens a
+ * transaction's details — used by a learning mission; it's a signal
+ * only and changes nothing about the feed.
  */
-export function ActivityFeed() {
+export function ActivityFeed({ onOpenTransaction }: { onOpenTransaction?: () => void } = {}) {
   const { state } = useSandbox();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -288,7 +292,10 @@ export function ActivityFeed() {
                         when: formatDayLabel(row.entry.createdAt),
                       }}
                       icon={entryIcon(row.entry)}
-                      onSelect={() => setSelectedId(row.entry.id)}
+                      onSelect={() => {
+                        setSelectedId(row.entry.id);
+                        onOpenTransaction?.();
+                      }}
                     />
                   ))}
                 </ul>

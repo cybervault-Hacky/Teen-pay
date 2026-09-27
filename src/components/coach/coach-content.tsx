@@ -35,7 +35,14 @@ const linkClass =
  * no buttons that move money or change settings. Its only side effects
  * are navigation and the local period choice, which isn't saved.
  */
-export function CoachContent() {
+export interface CoachContentProps {
+  /** Optional content shown under the header (e.g. a learning note). */
+  notice?: React.ReactNode;
+  /** Optional signal that the teen opened a Learn lesson. Changes nothing here. */
+  onLessonOpened?: () => void;
+}
+
+export function CoachContent({ notice, onLessonOpened }: CoachContentProps = {}) {
   const [period, setPeriod] = useState<CoachPeriod>("month");
   const result = useCoachReport(period);
 
@@ -46,6 +53,7 @@ export function CoachContent() {
         description="A read-only look at your own money. It never moves money or changes anything."
         actions={<Badge tone="warning">Sandbox</Badge>}
       />
+      {notice}
 
       {!result.ok ? (
         <Card>
@@ -61,15 +69,20 @@ export function CoachContent() {
           />
         </Card>
       ) : result.value.empty ? (
-        <CoachEmpty report={result.value} />
+        <CoachEmpty report={result.value} onLessonOpened={onLessonOpened} />
       ) : (
-        <CoachReportView report={result.value} period={period} onPeriodChange={setPeriod} />
+        <CoachReportView
+          report={result.value}
+          period={period}
+          onPeriodChange={setPeriod}
+          onLessonOpened={onLessonOpened}
+        />
       )}
     </div>
   );
 }
 
-function CoachEmpty({ report }: { report: CoachReport }) {
+function CoachEmpty({ report, onLessonOpened }: { report: CoachReport; onLessonOpened?: () => void }) {
   return (
     <div className="space-y-6">
       <Card>
@@ -86,7 +99,7 @@ function CoachEmpty({ report }: { report: CoachReport }) {
           className="py-10"
         />
       </Card>
-      <Learn report={report} />
+      <Learn report={report} onLessonOpened={onLessonOpened} />
     </div>
   );
 }
@@ -95,9 +108,11 @@ function CoachReportView({
   report,
   period,
   onPeriodChange,
+  onLessonOpened,
 }: {
   report: CoachReport;
   period: CoachPeriod;
+  onLessonOpened?: () => void;
   onPeriodChange: (period: CoachPeriod) => void;
 }) {
   const { summary } = report;
@@ -145,7 +160,7 @@ function CoachReportView({
 
       <HowItWorks />
 
-      <Learn report={report} />
+      <Learn report={report} onLessonOpened={onLessonOpened} />
     </div>
   );
 }
@@ -277,7 +292,7 @@ function HowItWorks() {
   );
 }
 
-function Learn({ report }: { report: CoachReport }) {
+function Learn({ report, onLessonOpened }: { report: CoachReport; onLessonOpened?: () => void }) {
   return (
     <section aria-label="Learn">
       <SectionHeader title="Learn" />
@@ -285,7 +300,12 @@ function Learn({ report }: { report: CoachReport }) {
         <ul className="divide-y divide-line">
           {report.lessons.map((lesson) => (
             <li key={lesson.id} id={lessonAnchor(lesson.id)} className="scroll-mt-24">
-              <details className="group px-4 py-3.5 sm:px-5">
+              <details
+                className="group px-4 py-3.5 sm:px-5"
+                onToggle={(e) => {
+                  if (e.currentTarget.open) onLessonOpened?.();
+                }}
+              >
                 <summary className="flex cursor-pointer list-none items-center gap-3 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
                   <span className="min-w-0 flex-1">{lesson.title}</span>
                   <ChevronRight

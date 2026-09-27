@@ -1,5 +1,7 @@
+import { Suspense } from "react";
 import { ActivityFeed } from "@/components/activity/activity-feed";
 import { PageHeader } from "@/components/layout/page-header";
+import { ActivityScreen } from "@/components/missions/mission-screens";
 import { RoleGate } from "@/components/sandbox/role-gate";
 import { Badge } from "@/components/ui/badge";
 
@@ -16,7 +18,9 @@ export default function ActivityPage() {
         description="Everything that happens with your money."
         actions={<Badge tone="warning">Sandbox</Badge>}
       />
-      <ActivityFeed />
+      <Suspense fallback={<ActivityFeed />}>
+        <ActivityScreen />
+      </Suspense>
     </RoleGate>
   );
 }

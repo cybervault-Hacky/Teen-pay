@@ -2,8 +2,8 @@
 
 A money platform for teenagers and their families — receive pocket money, manage a balance, save toward goals, and pay trusted people. TeenPay is designed for teens first: calm, clear, and safe, without asking a teenager to juggle a traditional bank account.
 
-> **Status: Phase 10 — Money Coach (sandbox).**
-> On top of Phase 9 (account-owned wallets, one append-only double-entry ledger, idempotent referenced operations, ledger-derived Money Spaces, recurring pocket money, teen-to-teen transfers and requests, TeenPay QR and favourites): teens get a **Money Coach** — a read-only view of their own money for this week, this month or the last 30 days. It shows what came in, what went out, what's set aside and how goals are doing, with short factual insights and lessons. **The Coach is informational and read-only:** it never moves money, approves anything, changes limits, executes payments, gives investment advice or calls an external AI — every figure is derived on the device, deterministically, from the teen's own ledger. Storage schema v8 (unchanged).
+> **Status: Phase 11 — Money Missions (sandbox).**
+> On top of Phase 10 (account-owned wallets, one append-only double-entry ledger, idempotent referenced operations, ledger-derived Money Spaces, recurring pocket money, teen-to-teen transfers and requests, TeenPay QR and favourites, and the read-only Money Coach): teens get **Money Missions** — ten short, optional learning missions about their own money (balances, Spaces, goals, pocket money, sending vs requesting, payment safety, Activity, transactions and the Coach). **Missions are for learning only:** they never move money, never need spending, pay no rewards and have no streaks, timers or reminders. Progress is derived deterministically on the device and saved in the same sandbox database (optional `missionProgress`, storage schema v8 unchanged). It's private to the teen.
 >
 > **No real authentication provider is active.** "Continue as Teen / Parent" starts a sandbox session on this device — no password, no OTP, no verification.
 >
@@ -48,7 +48,8 @@ cp .env.example .env.local
 ```
 src/
   app/            # Routes: /, /pay, /send, /request, /requests, /money,
-                  # /money/[spaceId], /qr, /qr/scan, /contacts, /coach, /activity,
+                  # /money/[spaceId], /qr, /qr/scan, /contacts, /coach,
+                  # /missions, /missions/[missionId], /activity,
                   # /family, /profile, /parent, /sign-in, /create-account
   auth/           # Auth abstraction: types, AuthProvider/useAuth, sandbox service
   components/
@@ -60,6 +61,8 @@ src/
     qr/           # QR code (SVG), My QR screen, camera scanner, scan screen
     contacts/     # Favourites list + favourites screen
     coach/        # Money Coach screen, Home card, insights, goals, period selector
+    missions/     # Money Missions list, mission page + step panel, Home card,
+                  # the mission note shown on Activity / Money / Coach
     activity/     # Ledger-derived feed, request cards, transaction detail
     money/        # Money screen (available, spaces, space activity, actions)
     spaces/       # Space card, detail, create/edit, add/move back, archive
@@ -77,12 +80,14 @@ src/
                   # transaction, recipient, request, ledger,
                   # safety, approval, events, notification, allowance, peer,
                   # qr (payload format + validator), contact,
-                  # coach (periods, definitions, insight rules — pure)
+                  # coach (periods, definitions, insight rules — pure),
+                  # mission (catalog, statuses, step rules — pure)
   sandbox/        # The sandbox: engine, operations, rules, transitions,
                   # space-transitions, allowance-transitions,
                   # peer (directory), peer-transitions,
                   # qr (QR identity + resolution), contacts (favourites),
                   # coach (read-only Money Coach analytics),
+                  # missions (mission progress engine — no money),
                   # family-transitions, events,
                   # identity, seed, scope,
                   # authorization, accounts, selectors, persistence,
@@ -683,6 +688,127 @@ All earlier tests were kept unchanged.
 - The Coach isn't in the tab bar yet. It's reached from the Home card.
 - Insights are rule-based and deliberately simple. There's no personalization beyond the teen's own figures.
 
+## Phase 11 — Money Missions
+
+Short, optional learning missions about a teen's own money. They look and read like the rest of TeenPay, not like a game. **Missions are for learning only.** They never move money, never need spending, never change limits, and pay no rewards. There are no streaks, points, leaderboards, timers, countdowns or reminder notifications.
+
+**Architecture.** Missions follow the same shape as the Coach, with one addition: a small progress record.
+
+```
+ledger / Spaces → existing selectors → mission facts → mission rules → UI
+                   (sandbox/selectors)  (sandbox/missions.ts)  (domain/mission.ts)  (components/missions)
+```
+
+- `domain/mission.ts` is pure: the catalog, step kinds, statuses, `deriveMissionView` / `deriveMissionBoard` and `checkStep`. It has no clock and no randomness.
+- `sandbox/missions.ts` is the engine:
+  - It reads three facts from the teen's own scoped state through the existing selectors: a custom Space, a goal with a target, and whether there's any completed transaction.
+  - It writes only `db.missionProgress`. It never touches the ledger, operations, wallets, Spaces, requests, approvals or notifications, and it has no path to `postOperation`.
+- The store adds four actions:
+  - `missionBoard()` and `missionDetail(id)` are read-only, through `readDb`.
+  - `startMission(id)` and `advanceMission(id, stepId, answer?)` go through `dispatchDb`, the same signed-in gate and single commit path as every other write. The clock is read once there and passed down.
+- The UI calls only those actions (`use-missions.ts`). It never reads the ledger, selectors or scope.
+- The board is memoized per database snapshot and account in a `WeakMap`, so Home, Profile and `/missions` share one calculation.
+- Coach, Activity and Money don't depend on Missions. They gained only small optional hooks: a `notice` / `banner` slot, `onLessonOpened` and `onOpenTransaction`. The wrappers in `components/missions/mission-screens.tsx` connect them.
+
+**Catalog.** Ten missions in four categories, each with a stable public slug (used in the URL), a purpose, steps, an estimated time and completion copy.
+
+| Mission | Category | Steps | How it completes |
+| --- | --- | --- | --- |
+| Know Your Balance | Money basics | read, read, check | Right answer to the check |
+| Available vs Set Aside | Money basics | read, check | Right answer (a worked ₹ example) |
+| Understand Pocket Money | Money basics | read, read, check | Right answer |
+| Send vs Request | Money basics | read, read, check | Right answer |
+| Payment Safety | Safety | read ×3, check | Right answer (a scam scenario: never pay to unlock a prize) |
+| Explore Your Spending | Explore | read, visit Activity | "Mark step done" on Activity |
+| Review a Transaction | Explore | read, visit a transaction, check | Opening a transaction's details, then the check. **Locked** until the wallet has a transaction |
+| Build a Money Space | Save | read, evidence | The teen really has a custom Space (made in the usual flow; no money needed) |
+| Set a Saving Goal | Save | read, evidence | The teen has a goal with a target (an existing goal counts) |
+| Learn From Your Coach | Explore | read, visit Coach, check | Opening a Coach lesson, then the check |
+
+**Completion model.**
+- Statuses are derived, never stored: `available` (not started), `in_progress` (with "Step N of M"), `completed` or `locked`.
+- A **completed mission stays completed**, even if a lock or evidence would fail later (for example, the Space was archived).
+- Progress is a step count. There are no percentages or scores.
+- No fake progress:
+  - Opening a screen completes nothing. A mission has to be started, and steps finish in order.
+  - A check needs the right answer. A wrong answer changes nothing and shows a gentle hint, with no penalty and no limit on retries.
+  - An evidence step checks real data at that moment.
+  - A visit step can only be marked done on the target screen, after the objective (for example, a transaction or lesson was opened).
+- Idempotent:
+  - Starting a started mission, or repeating a finished step, returns the current view and changes nothing.
+  - Every failure leaves the database untouched.
+- Stored timestamps never go backwards, even if the device clock does.
+
+**Persistence and schema.**
+- Progress lives in the one sandbox database as `missionProgress: { ownerAccountId, missionId, stepsCompleted, startedAt, updatedAt, completedAt? }[]`.
+- The field is optional and additive, so the schema stays **v8**. There is no migration and no separate localStorage key. Pre-Phase-11 data loads unchanged, and older schemas migrate as before.
+- It survives reload. **Reset Sandbox clears it** (the reset dialog says so).
+- `isSandboxDatabase` validates it strictly. It rejects:
+  - unknown keys (a smuggled balance, reward or wallet id);
+  - an owner who isn't a teen;
+  - an unknown mission;
+  - a step count that isn't a whole number within range;
+  - `completedAt` present when steps are unfinished, or missing when they're finished;
+  - bad or out-of-order timestamps;
+  - duplicate records.
+
+  Corrupt data goes through the existing backup-and-recover path: the raw data is kept as a backup and the seed loads. It never crashes.
+
+**Auth and privacy.**
+- There's a new `missions.use` permission for teens only (`TEEN_SELF_PERMISSIONS`). A parent, even a linked guardian whose scope includes the teen's wallet, gets `not_permitted`. There's no parent view of missions and no parent controls.
+- `/missions` and `/missions/[missionId]` are protected (signed out → sign-in) and wrapped in `RoleGate role="teen"`.
+- A teen only ever reads or writes their own records. The URL id only selects a public catalog entry.
+- Views and screens contain no account, wallet or record ids. Tests check this.
+
+**Money safety.**
+- The engine can't write money, and the static audit enforces it.
+- A test completes all ten missions and checks that everything except `missionProgress` is byte-for-byte identical.
+- The journey checks that the ledger, operations, wallets, requests and approvals are unchanged. The Space mission uses the normal Spaces flow and needs no money.
+
+**Screens and routes.**
+- **`/missions`:**
+  - A summary: "N of 10 completed" in words (with a decorative progress strip) and a link to continue.
+  - Missions grouped by category, each showing title, summary, status (icon + words), time and step count.
+  - Four categories, so no filters are needed.
+- **`/missions/[missionId]`:**
+  - Category, title, purpose, status and time.
+  - Then one panel, depending on the status: "Start mission", the current step, "Locked for now" with the reason, or "Mission completed" with the completion copy, date and next mission.
+  - Then an ordered step list with states in words. Finished steps can be re-read.
+  - Focus moves to the new step heading as you progress. Engine errors show inline (`role="alert"`) and checks announce the result (`role="status"`).
+  - An unknown id shows a calm "We couldn't find that mission" and creates nothing.
+- **Activity, Money and Coach** show a quiet note when opened from a mission (`?mission=<slug>`). Everything else on those screens works as usual, and an unknown slug shows nothing.
+- **Home:** a Money Missions card with "N of 10 completed" and the next mission ("Up next", or "Continue learning" when one is in progress).
+- **Profile:** a teen-only **Learn** section with Money Coach and Money Missions.
+- No new tab, to avoid crowding the navigation. Accessibility: semantic headings, labelled regions, native radios in a fieldset, statuses never shown by colour alone, reduced-motion aware, no emoji.
+
+**Tests** (`npm test`): 816 in total (55 files). Phase 11 adds 101:
+- `missions-domain.test.ts` (22): catalog integrity, stable ids, internal links only, a copy guard (no rewards, streaks, pressure, gambling, crypto, loans or investing), statuses, locks, "completed stays completed", IST completion day, board and next mission, checks and evidence;
+- `missions-engine.test.ts` (21): lessons, wrong answers, order, no auto-start, unknown ids, idempotency, clock safety, Space and goal evidence through the real Spaces engine, locks, parent denial, teen-to-teen privacy, no ids, money safety, memoization;
+- `missions-persistence.test.ts` (28): schema v8, reload, pre-Phase-11 data, older migrations, reset, 20 kinds of tampered records, and recovery with a backup;
+- `missions-ui.test.tsx` (16): the list, locked state, the full lesson flow with focus, not-found, evidence step, the Activity / Coach / Money notes, Home card, Profile, parent gate, signed-out redirect, stale actions after sign-out, and corrupt storage;
+- `missions-security.test.ts` (13): static audit of every Missions file. It checks for no money writes, network, AI or analytics calls, randomness, timers, rewards, secrets, emoji, dangerous rendering or ids. It also checks store wiring, teen-only auth, and that Coach, Activity and Money don't depend on Missions;
+- `phase11-journey.test.tsx`: a 25-step journey through the real app:
+  1. start a mission;
+  2. finish a lesson step;
+  3. see the progress;
+  4. leave and return;
+  5. finish with a wrong try on the way;
+  6. the Activity mission;
+  7. the Space mission via the usual flow;
+  8. the Coach mission with a period switch;
+  9. confirm no money changed;
+  10. parent denied;
+  11. teen state intact;
+  12. Reset Sandbox clears missions.
+
+All earlier tests were kept unchanged.
+
+**Limitations.**
+- Sandbox only, one device, fixed English catalog.
+- Visit steps are confirmed on the device ("I looked"). The app checks the teen opened a transaction or lesson, but can't know they read it.
+- Evidence reflects data at the moment the step is finished, by design. Later changes don't undo a completed mission.
+- Missions aren't in the tab bar. They're reached from Home, Profile and the mission links.
+
 ## Design system
 
 All styling flows from the semantic tokens in `src/app/globals.css`:
@@ -718,5 +844,6 @@ Money is rendered exclusively through `AmountDisplay` (tabular numerals, INR for
 - **Phase 7** — Pocket Money Autopilot: weekly/monthly schedules from a parent's wallet to a linked teen's, explicit idempotent execution (one `ALW-` operation per transfer day), missed-day and insufficient-funds policies, freeze safety, pause/resume/cancel/end date, parent and teen screens, schema v6 migration
 - **Phase 8** — Send & Request Money: teen-to-teen transfers by TeenPay ID (one atomic `TRF-` operation, available money only, idempotent), money requests (pending → accepted / declined / cancelled / expired after 7 days), guardian limits and approvals for transfers, privacy-safe directory, Requests center, schema v7 migration
 - **Phase 9** — QR Payments, Contacts & Fast Pay: a versioned TeenPay QR holding only the public TeenPay ID, a strict central validator, a camera scanner (BarcodeDetector) with an honest sandbox paste path, scan → confirm → existing Send/Request flow, owner-scoped favourites with Quick Pay / Quick Request, schema v8 migration
-- **Phase 10 (this)** — Money Coach: a read-only, teen-only view of your own money (week / month / 30 days) — available, set aside, received, spent — with deterministic factual insights, goal progress, lessons and documented definitions; no writes, no network, no AI, no score
+- **Phase 10** — Money Coach: a read-only, teen-only view of your own money (week / month / 30 days) — available, set aside, received, spent — with deterministic factual insights, goal progress, lessons and documented definitions; no writes, no network, no AI, no score
+- **Phase 11 (this)** — Money Missions: ten short, optional, teen-only learning missions (reading, gentle checks, visiting Activity / Coach, and real evidence such as creating a Space) with deterministic progress saved in the one sandbox database; they never move money, need no spending and have no rewards, streaks, timers or reminders
 - **Later (recommendation only)** — a real auth provider behind `AuthService` and a cloud repository behind the repository contract, then real payment rails with a regulated provider

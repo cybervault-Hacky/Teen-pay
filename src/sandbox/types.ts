@@ -1,6 +1,7 @@
 import type {
   AppNotification,
   Contact,
+  MissionProgress,
   ApprovalRequest,
   DomainEvent,
   Family,
@@ -119,6 +120,14 @@ export interface SandboxDatabase {
    * Written only by the contact engine (`contacts.ts`).
    */
   contacts: Contact[];
+  /**
+   * Money Missions progress (Phase 11): per teen, per mission, steps
+   * done. Optional and additive — absent means no mission has been
+   * started, so every earlier v8 database is still a valid v8
+   * database (no migration). Validated whenever present. Written only
+   * by the mission engine (`missions.ts`), which never touches money.
+   */
+  missionProgress?: MissionProgress[];
   notifications: AppNotification[];
   familyLogs: FamilyLog[];
   securityEvents: SecurityEvent[];
@@ -222,6 +231,9 @@ export type SandboxErrorCode =
   | "request_expired"
   | "invalid_qr"
   | "self_contact"
+  | "unknown_mission"
+  | "mission_locked"
+  | "mission_step"
   | "contact_exists"
   | "unknown_contact"
   | "contact_limit_reached";

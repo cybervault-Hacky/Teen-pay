@@ -1,4 +1,6 @@
+import { Suspense } from "react";
 import { CoachContent } from "@/components/coach/coach-content";
+import { MissionCoachScreen } from "@/components/missions/mission-screens";
 import { RoleGate } from "@/components/sandbox/role-gate";
 
 export const metadata = {
@@ -9,7 +11,9 @@ export const metadata = {
 export default function CoachPage() {
   return (
     <RoleGate role="teen">
-      <CoachContent />
+      <Suspense fallback={<CoachContent />}>
+        <MissionCoachScreen />
+      </Suspense>
     </RoleGate>
   );
 }

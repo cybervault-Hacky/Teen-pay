@@ -16,8 +16,10 @@ import MyQrPage from "@/app/qr/page";
 import ScanPage from "@/app/qr/scan/page";
 import ContactsPage from "@/app/contacts/page";
 import CoachPage from "@/app/coach/page";
+import MissionsPage from "@/app/missions/page";
 import SignInPage from "@/app/sign-in/page";
 import { AppShell } from "@/components/layout/app-shell";
+import { MissionDetail } from "@/components/missions/mission-detail";
 import { RoleGate } from "@/components/sandbox/role-gate";
 import { SpaceDetail } from "@/components/spaces/space-detail";
 import { SandboxProvider } from "@/sandbox/store";
@@ -40,13 +42,26 @@ const PAGES: Record<string, () => React.ReactNode> = {
   "/qr/scan": () => <ScanPage />,
   "/contacts": () => <ContactsPage />,
   "/coach": () => <CoachPage />,
+  "/missions": () => <MissionsPage />,
 };
 
 /**
- * `/money/[spaceId]` — the real route is an async server component,
- * so tests render what it renders: the gated client detail.
+ * `/money/[spaceId]` and `/missions/[missionId]` — the real routes are
+ * async server components, so tests render what they render: the
+ * gated client detail.
  */
 function dynamicPage(pathname: string): (() => React.ReactNode) | undefined {
+  const mission = /^\/missions\/([^/]+)$/.exec(pathname);
+  if (mission) {
+    const missionId = decodeURIComponent(mission[1]!);
+    return function MissionPage() {
+      return (
+        <RoleGate role="teen">
+          <MissionDetail missionId={missionId} />
+        </RoleGate>
+      );
+    };
+  }
   const space = /^\/money\/([^/]+)$/.exec(pathname);
   if (!space) return undefined;
   const spaceId = decodeURIComponent(space[1]!);

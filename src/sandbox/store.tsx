@@ -113,7 +113,13 @@ import {
 } from "./contacts";
 import { qrIdentityFor, resolveQrRecipient, type QrIdentity } from "./qr";
 import { coachReportFor } from "./coach";
-import type { CoachPeriod, CoachReport, PeerProfile } from "@/domain";
+import {
+  advanceMissionTransition,
+  missionBoardFor,
+  missionDetailFor,
+  startMissionTransition,
+} from "./missions";
+import type { CoachPeriod, CoachReport, MissionBoard, MissionView, PeerProfile } from "@/domain";
 import type { SandboxDatabase, SandboxError, SandboxResult, SandboxState } from "./types";
 
 /**
@@ -316,6 +322,20 @@ export interface SandboxActions {
    * `not_permitted`; a signed-out (stale) screen gets `not_signed_in`.
    */
   coachReport: (period: CoachPeriod) => SandboxResult<CoachReport>;
+
+  // ── Money Missions (learning progress only — see missions.ts) ──
+  /** The signed-in teen's missions, statuses and progress. Read-only. */
+  missionBoard: () => SandboxResult<MissionBoard>;
+  /** One mission as the signed-in teen sees it. Read-only. */
+  missionDetail: (missionId: string) => SandboxResult<MissionView>;
+  /** Starts a mission. Records learning progress only — never money. */
+  startMission: (missionId: string) => SandboxResult<MissionView>;
+  /**
+   * Finishes the current step of a started mission after the engine
+   * checks it (order, answer, evidence). Records learning progress
+   * only; a repeat changes nothing.
+   */
+  advanceMission: (missionId: string, stepId: string, answer?: number) => SandboxResult<MissionView>;
 
   // ── Approvals ──
   decideApproval: (
@@ -747,6 +767,15 @@ export function SandboxProvider({
 
       coachReport: (period) =>
         readDb((db, actorId) => coachReportFor(db, actorId, period, new Date().toISOString())),
+
+      missionBoard: () => readDb((db, actorId) => missionBoardFor(db, actorId)),
+      missionDetail: (missionId) => readDb((db, actorId) => missionDetailFor(db, actorId, missionId)),
+      startMission: (missionId) =>
+        dispatchDb((db, actorId, at) => startMissionTransition(db, { actorId, at, missionId })),
+      advanceMission: (missionId, stepId, answer) =>
+        dispatchDb((db, actorId, at) =>
+          advanceMissionTransition(db, { actorId, at, missionId, stepId, ...(answer !== undefined ? { answer } : {}) }),
+        ),
 
       decideApproval: (approvalId, decision) => {
         // Approving a TeenPay transfer executes across families, so it
