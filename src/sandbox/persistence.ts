@@ -1,6 +1,8 @@
 import {
   checkMoney,
   defaultSaveSpaceId,
+  PEER_NOTE_MAX,
+  peerRequestExpiresAt,
   isOpenSchedule,
   pocketMoneyExecutionId,
   POCKET_MONEY_DAY_OF_MONTH_MAX,
@@ -45,10 +47,11 @@ import {
  * Validation and migration for persisted sandbox data.
  *
  *   v1 (Phase 2) ──migrateV1──▶ v3 ─┐
- *   v2 (Phase 3) ──migrateV2──▶ v3 ─┼─migrateV3──▶ v4 ─migrateV4──▶ v5 ─migrateV5──▶ v6 (current)
- *   v3 (Phase 4) ───────────────────┘              ▲                 ▲
- *   v4 (Phase 5) ──────────────────────────────────┘                 │
- *   v5 (Phase 6) ────────────────────────────────────────────────────┘
+ *   v2 (Phase 3) ──migrateV2──▶ v3 ─┼─migrateV3──▶ v4 ─migrateV4──▶ v5 ─migrateV5──▶ v6 ─migrateV6──▶ v7 (current)
+ *   v3 (Phase 4) ───────────────────┘              ▲                 ▲                ▲
+ *   v4 (Phase 5) ──────────────────────────────────┘                 │                │
+ *   v5 (Phase 6) ────────────────────────────────────────────────────┘                │
+ *   v6 (Phase 7) ─────────────────────────────────────────────────────────────────────┘
  *
  * Every step keeps the money history: no entry is dropped or changed
  * in amount, direction or date. Anything that fails validation takes
@@ -146,8 +149,13 @@ export interface V4Database {
   recipients: Recipient[];
 }
 
+/** Schema v6 (Phase 7): v7 without TeenPay money requests. */
+export interface V6Database extends Omit<SandboxDatabase, "version" | "peerRequests"> {
+  version: 6;
+}
+
 /** Schema v5 (Phase 6): v6 without pocket money schedules. */
-export interface V5Database extends Omit<SandboxDatabase, "version" | "pocketMoneySchedules"> {
+export interface V5Database extends Omit<SandboxDatabase, "version" | "pocketMoneySchedules" | "peerRequests"> {
   version: 5;
 }
 
@@ -528,17 +536,16 @@ function isScheduleRecord(
 }
 
 /**
- * Schema v6 — the only shape that is saved. Everything v5 checks
- * (see `coreIntegrity`), plus pocket money: every schedule valid (see
+ * Checks shared by v6 and v7: everything v5 checks (see
+ * `coreIntegrity`), plus pocket money — every schedule valid (see
  * `isScheduleRecord`), unique ids, at most one open schedule per
  * parent and teen, and every scheduled ledger entry an allowance entry
- * of a known schedule on that schedule's wallets. Tampering is
- * rejected, not loaded.
+ * of a known schedule on that schedule's wallets. Returns the wallet
+ * owners, or null.
  */
-export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
-  if (!isRecord(value) || value.version !== SANDBOX_SCHEMA_VERSION) return false;
+function scheduleIntegrity(value: UnknownRecord): Map<unknown, unknown> | null {
   const owners = coreIntegrity(value);
-  if (!owners) return false;
+  if (!owners) return null;
 
   const accounts = new Map((value.accounts as UnknownRecord[]).map((a) => [a.id, a.role]));
   const familyIds = new Set((value.families as UnknownRecord[]).map((f) => f.id));
@@ -548,29 +555,153 @@ export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
       isScheduleRecord(sc, accounts, familyIds, owners, operations),
     )
   ) {
-    return false;
+    return null;
   }
   const schedules = value.pocketMoneySchedules as unknown as PocketMoneySchedule[];
   const byId = new Map(schedules.map((sc) => [sc.id, sc]));
-  if (byId.size !== schedules.length) return false;
+  if (byId.size !== schedules.length) return null;
   const openPairs = schedules
     .filter((sc) => isOpenSchedule(sc))
     .map((sc) => `${sc.parentAccountId}>${sc.teenAccountId}`);
-  if (new Set(openPairs).size !== openPairs.length) return false;
+  if (new Set(openPairs).size !== openPairs.length) return null;
 
   for (const e of value.ledger as UnknownRecord[]) {
     if (e.scheduleId === undefined && e.scheduledFor === undefined) continue;
     const schedule = byId.get(e.scheduleId as string);
-    if (!schedule) return false;
+    if (!schedule) return null;
     if (e.type === "allowance_debit" ? e.walletId !== schedule.sourceWalletId : e.type === "allowance_credit" ? e.walletId !== schedule.destinationWalletId : true) {
-      return false;
+      return null;
     }
-    if (e.operationId !== pocketMoneyExecutionId(schedule.id, String(e.scheduledFor))) return false;
+    if (e.operationId !== pocketMoneyExecutionId(schedule.id, String(e.scheduledFor))) return null;
   }
   for (const op of operations.values()) {
     if (op.scheduleId === undefined) continue;
     const schedule = byId.get(op.scheduleId as string);
-    if (!schedule || !schedule.runs.some((r) => r.id === op.id && r.status === "completed")) return false;
+    if (!schedule || !schedule.runs.some((r) => r.id === op.id && r.status === "completed")) return null;
+  }
+  return owners;
+}
+
+/** Schema v6 (Phase 7) — before TeenPay money requests. */
+export function isV6Database(value: unknown): value is UnknownRecord {
+  if (!isRecord(value) || value.version !== 6) return false;
+  return scheduleIntegrity(value) !== null;
+}
+
+const PEER_REQUEST_STATUSES = new Set(["pending", "accepted", "declined", "cancelled", "expired"]);
+const PEER_ENTRY_TYPES = new Set(["transfer_in", "transfer_out"]);
+
+/**
+ * One stored TeenPay money request: two different real teen accounts,
+ * each on their own wallet, a valid amount, the fixed 7-day expiry, a
+ * coherent status — and when accepted, the one `transfer` operation
+ * that paid it (payer's wallet → requester's wallet, same amount,
+ * same reference). Anything else has no money behind it.
+ */
+function isPeerRequestRecord(
+  value: unknown,
+  roles: Map<unknown, unknown>,
+  owners: Map<unknown, unknown>,
+  paidBy: Map<unknown, UnknownRecord>,
+): boolean {
+  if (!isRecord(value)) return false;
+  const id = value.requestId;
+  if (typeof id !== "string" || id.length === 0) return false;
+  if (roles.get(value.requesterAccountId) !== "teen" || roles.get(value.payerAccountId) !== "teen") return false;
+  if (value.requesterAccountId === value.payerAccountId) return false;
+  if (owners.get(value.requesterWalletId) !== value.requesterAccountId) return false;
+  if (owners.get(value.payerWalletId) !== value.payerAccountId) return false;
+  for (const key of ["requesterHandle", "requesterName", "payerHandle", "payerName", "idempotencyKey"]) {
+    if (typeof value[key] !== "string" || (value[key] as string).length === 0) return false;
+  }
+  if (checkMoney(value.amount) !== null || value.currency !== SANDBOX_CURRENCY) return false;
+  if (value.note !== undefined && (typeof value.note !== "string" || value.note.length > PEER_NOTE_MAX)) return false;
+  if (!PEER_REQUEST_STATUSES.has(String(value.status))) return false;
+  if (!isIsoInstant(value.createdAt) || !isIsoInstant(value.updatedAt)) return false;
+  if (value.expiresAt !== peerRequestExpiresAt(value.createdAt)) return false;
+  const op = paidBy.get(id);
+  if (value.status === "pending") {
+    if (value.respondedAt !== undefined || value.resultingPaymentReference !== undefined) return false;
+  } else if (!isIsoInstant(value.respondedAt)) {
+    return false;
+  }
+  if (value.status === "accepted") {
+    if (!op || op.reference !== value.resultingPaymentReference || op.amount !== value.amount) return false;
+    const legs = op.legs as UnknownRecord[];
+    const debit = legs.find((l) => l.direction === "debit");
+    const credit = legs.find((l) => l.direction === "credit");
+    if (debit?.walletId !== value.payerWalletId || credit?.walletId !== value.requesterWalletId) return false;
+  } else if (op || value.resultingPaymentReference !== undefined) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Schema v7 — the only shape that is saved. Everything v6 checks (see
+ * `scheduleIntegrity`), plus TeenPay money: every money request valid
+ * (see `isPeerRequestRecord`) with unique ids and idempotency keys;
+ * every `transfer` operation exactly one debit and one credit leg on
+ * two different wallets (request payments always), whose ledger entries
+ * match those legs exactly; every transfer entry that names a request
+ * belonging to that request's accepted payment. Tampering is rejected,
+ * not loaded.
+ */
+export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
+  if (!isRecord(value) || value.version !== SANDBOX_SCHEMA_VERSION) return false;
+  const owners = scheduleIntegrity(value);
+  if (!owners) return false;
+  if (!Array.isArray(value.peerRequests)) return false;
+
+  const paidBy = new Map<unknown, UnknownRecord>();
+  for (const op of value.operations as UnknownRecord[]) {
+    if (op.type !== "transfer") continue;
+    const legs = (op.legs as UnknownRecord[]).filter((l) => l.walletId !== undefined);
+    // Legacy (pre-v4) transfers may have one wallet leg; a two-wallet
+    // transfer — every peer transfer — must be one debit, one credit,
+    // on two different known wallets.
+    if (
+      legs.length === 2 &&
+      (legs[0]!.direction === legs[1]!.direction ||
+        legs[0]!.walletId === legs[1]!.walletId ||
+        legs.some((l) => !owners.has(l.walletId)))
+    ) {
+      return false;
+    }
+    // …and its ledger entries are exactly those legs: same wallet,
+    // direction and amount, transfer_out for the debit, transfer_in
+    // for the credit — no flipped or extra entries.
+    if (legs.length === 2) {
+      const entries = (value.ledger as UnknownRecord[]).filter((e) => e.operationId === op.id);
+      if (entries.length !== 2) return false;
+      for (const leg of legs) {
+        const entry = entries.find((e) => e.walletId === leg.walletId);
+        if (
+          !entry ||
+          entry.direction !== leg.direction ||
+          entry.amount !== leg.amount ||
+          entry.type !== (leg.direction === "debit" ? "transfer_out" : "transfer_in")
+        ) {
+          return false;
+        }
+      }
+    }
+    if (op.requestId !== undefined) {
+      if (legs.length !== 2) return false;
+      if (typeof op.requestId !== "string" || paidBy.has(op.requestId)) return false;
+      paidBy.set(op.requestId, op);
+    }
+  }
+  const roles = new Map((value.accounts as UnknownRecord[]).map((a) => [a.id, a.role]));
+  if (!isArrayOf(value.peerRequests, (r) => isPeerRequestRecord(r, roles, owners, paidBy))) return false;
+  const requests = value.peerRequests as UnknownRecord[];
+  if (new Set(requests.map((r) => r.requestId)).size !== requests.length) return false;
+  if (new Set(requests.map((r) => r.idempotencyKey)).size !== requests.length) return false;
+  const known = new Set(requests.map((r) => r.requestId));
+  for (const requestId of paidBy.keys()) if (!known.has(requestId)) return false;
+  for (const e of value.ledger as UnknownRecord[]) {
+    if (e.requestId === undefined || !PEER_ENTRY_TYPES.has(String(e.type))) continue;
+    if (paidBy.get(e.requestId)?.id !== e.operationId) return false;
   }
   return true;
 }
@@ -711,6 +842,7 @@ export function databaseFromState(state: SandboxState): SandboxDatabase {
     spaces: state.spaces,
     pocketMoneySchedules: state.schedules,
     teenRecords: [{ teenId, requests: state.requests, approvals: state.approvals }],
+    peerRequests: state.peerRequests ?? [],
     notifications: state.notifications,
     familyLogs: [{ familyId: state.family.id, events: state.familyEvents }],
     securityEvents: [],
@@ -1181,7 +1313,7 @@ export function migrateV4(v4: V4Database, now: string): V5Database {
  *  · The preview field is then removed from controls.
  *  · Money data is carried over untouched (no schedule has any runs).
  */
-export function migrateV5(v5: V5Database, now: string): SandboxDatabase {
+export function migrateV5(v5: V5Database, now: string): V6Database {
   const today = productDay(now);
   const schedules: PocketMoneySchedule[] = [];
   const families: Family[] = v5.families.map((family) => ({
@@ -1235,19 +1367,34 @@ export function migrateV5(v5: V5Database, now: string): SandboxDatabase {
   }));
   return {
     ...v5,
-    version: SANDBOX_SCHEMA_VERSION,
+    version: 6,
     families,
     pocketMoneySchedules: schedules,
   };
 }
 
+/**
+ * v6 → v7: Send & Request Money. Adds an empty `peerRequests` list —
+ * v6 had no TeenPay money requests. Everything else (accounts,
+ * wallets, ledger, operations, Spaces, schedules, contact requests,
+ * approvals, notifications) is carried over untouched; the original is
+ * kept in the repository backup.
+ */
+export function migrateV6(v6: V6Database): SandboxDatabase {
+  // v6 never had money requests: anything stored under that name is
+  // foreign and is not carried over (the backup keeps the original).
+  const { peerRequests: _foreign, ...rest } = v6 as V6Database & { peerRequests?: unknown };
+  void _foreign;
+  return { ...rest, version: SANDBOX_SCHEMA_VERSION, peerRequests: [] };
+}
+
 export type MigrationResult =
   | { kind: "current"; db: SandboxDatabase }
-  | { kind: "migrated"; from: 1 | 2 | 3 | 4 | 5; db: SandboxDatabase }
+  | { kind: "migrated"; from: 1 | 2 | 3 | 4 | 5 | 6; db: SandboxDatabase }
   | { kind: "unreadable" };
 
 /**
- * Turns any stored payload into a current (v6) database, or says it
+ * Turns any stored payload into a current (v7) database, or says it
  * can't. Every intermediate result is re-validated before the next
  * step, and the final one before it's trusted.
  */
@@ -1257,35 +1404,43 @@ export function migrateToCurrent(
 ): MigrationResult {
   if (isSandboxDatabase(parsed)) return { kind: "current", db: parsed };
   try {
-    let v5: V5Database | null = null;
-    let from: 1 | 2 | 3 | 4 | 5 = 5;
-    if (isV5Database(parsed)) {
-      v5 = parsed as unknown as V5Database;
+    let v6: V6Database | null = null;
+    let from: 1 | 2 | 3 | 4 | 5 | 6 = 6;
+    if (isV6Database(parsed)) {
+      v6 = parsed as unknown as V6Database;
     } else {
-      let v4: V4Database | null = null;
-      from = 4;
-      if (isV4Database(parsed)) {
-        v4 = parsed as unknown as V4Database;
+      let v5: V5Database | null = null;
+      from = 5;
+      if (isV5Database(parsed)) {
+        v5 = parsed as unknown as V5Database;
       } else {
-        let v3: V3Database | null = null;
-        from = 3;
-        if (isV3Database(parsed)) {
-          v3 = parsed as unknown as V3Database;
-        } else if (isV2State(parsed)) {
-          v3 = migrateV2(parsed, options.now);
-          from = 2;
-        } else if (isV1State(parsed)) {
-          v3 = migrateV1(parsed, options.seedView);
-          from = 1;
+        let v4: V4Database | null = null;
+        from = 4;
+        if (isV4Database(parsed)) {
+          v4 = parsed as unknown as V4Database;
+        } else {
+          let v3: V3Database | null = null;
+          from = 3;
+          if (isV3Database(parsed)) {
+            v3 = parsed as unknown as V3Database;
+          } else if (isV2State(parsed)) {
+            v3 = migrateV2(parsed, options.now);
+            from = 2;
+          } else if (isV1State(parsed)) {
+            v3 = migrateV1(parsed, options.seedView);
+            from = 1;
+          }
+          if (!v3 || !isV3Database(v3)) return { kind: "unreadable" };
+          v4 = migrateV3(v3);
+          if (!isV4Database(v4)) return { kind: "unreadable" };
         }
-        if (!v3 || !isV3Database(v3)) return { kind: "unreadable" };
-        v4 = migrateV3(v3);
-        if (!isV4Database(v4)) return { kind: "unreadable" };
+        v5 = migrateV4(v4, options.now);
+        if (!isV5Database(v5)) return { kind: "unreadable" };
       }
-      v5 = migrateV4(v4, options.now);
-      if (!isV5Database(v5)) return { kind: "unreadable" };
+      v6 = migrateV5(v5, options.now);
+      if (!isV6Database(v6)) return { kind: "unreadable" };
     }
-    const db = migrateV5(v5, options.now);
+    const db = migrateV6(v6);
     return isSandboxDatabase(db) ? { kind: "migrated", from, db } : { kind: "unreadable" };
   } catch {
     return { kind: "unreadable" };

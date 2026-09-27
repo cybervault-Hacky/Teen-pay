@@ -10,6 +10,7 @@ import {
   migrateV3,
   migrateV4,
   migrateV5,
+  migrateV6,
   parseLegacyDeadline,
   type V4Database,
 } from "@/sandbox/persistence";
@@ -65,9 +66,9 @@ const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 describe("migration — Phase 5 (v4) → Phase 6 (v5 Money Spaces)", () => {
   it("turns Save and goal allocations into Spaces without adding, removing or changing money", () => {
     const v4 = v4Database();
-    // Phase 7: v4 → v5, then → v6 (the current schema).
+    // Phase 8: v4 → v5 → v6, then → v7 (the current schema).
     expect(isV5Database(clone(migrateV4(clone(v4), NOW)))).toBe(true);
-    const db = migrateV5(migrateV4(clone(v4), NOW), NOW);
+    const db = migrateV6(migrateV5(migrateV4(clone(v4), NOW), NOW));
     expect(db.version).toBe(SANDBOX_SCHEMA_VERSION);
     expect(isSandboxDatabase(db)).toBe(true);
 
@@ -98,7 +99,7 @@ describe("migration — Phase 5 (v4) → Phase 6 (v5 Money Spaces)", () => {
   });
 
   it("a goal entry whose goal record is missing gets a custom Space — its money stays visible", () => {
-    const db = migrateV5(migrateV4(v4Database([]), NOW), NOW);
+    const db = migrateV6(migrateV5(migrateV4(v4Database([]), NOW), NOW));
     expect(isSandboxDatabase(db)).toBe(true);
     const orphan = db.spaces.find((s) => s.id === "goal_bike");
     expect(orphan).toMatchObject({ type: "custom", ownerAccountId: SEED_TEEN_ID });
@@ -239,7 +240,8 @@ describe("reload and reset", () => {
     const a = repo.reset();
     const b = repo.reset();
     expect(a).toEqual(b);
-    expect(a.spaces.map((sp) => sp.id)).toEqual([SEED_SAVE_SPACE_ID, SEED_GOAL_SPACE_ID]);
+    // Phase 8: plus the seeded peer teen's own (empty) default Save.
+    expect(a.spaces.map((sp) => sp.id)).toEqual([SEED_SAVE_SPACE_ID, SEED_GOAL_SPACE_ID, "spc_save_usr_meera"]);
     expect(storage.getItem(SANDBOX_STORAGE_KEY)).toBeNull();
     expect(storage.getItem(SANDBOX_BACKUP_KEY)).toBeNull();
   });

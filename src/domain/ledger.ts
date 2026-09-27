@@ -34,7 +34,10 @@ export type LedgerEntryType =
   | "payment_sent"
   /** A settled money request (money in from a fictional person). */
   | "payment_received"
-  /** Wallet-to-wallet transfer legs. */
+  /**
+   * Wallet-to-wallet transfer legs — TeenPay-to-TeenPay money (Phase 8):
+   * sending, and paying a money request.
+   */
   | "transfer_out"
   | "transfer_in"
   /** Money returned against an earlier payment. */
@@ -62,6 +65,12 @@ export interface LedgerCounterparty {
   kind: LedgerCounterpartyKind;
   id: string;
   name: string;
+  /**
+   * Peer transfers only: the other account's TeenPay ID ("@meera"), a
+   * display snapshot so each side can show the other without reading
+   * the other's account.
+   */
+  handle?: string;
 }
 
 /** An entry exists only once money has moved. */

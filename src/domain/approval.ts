@@ -9,8 +9,13 @@
  */
 export type ApprovalStatus = "pending" | "approved" | "declined" | "cancelled";
 
-/** Extensible: future kinds could be "new_recipient", "limit_raise"… */
-export type ApprovalKind = "payment";
+/**
+ * "payment" — to a sandbox contact; "transfer" — to another TeenPay
+ * teen (sending, or paying a money request). Both execute through the
+ * one ledger write path, exactly once. Extensible: future kinds could
+ * be "new_recipient", "limit_raise"…
+ */
+export type ApprovalKind = "payment" | "transfer";
 
 export interface ApprovalRequest {
   id: string;
@@ -20,9 +25,15 @@ export interface ApprovalRequest {
   /** Whole rupees, always positive. */
   amount: number;
   currency: "INR";
+  /**
+   * "payment": the sandbox contact. "transfer": the recipient account
+   * (resolved again, and re-checked, when the approval executes).
+   */
   recipientId: string;
-  /** Snapshot for display, in case the recipient list changes. */
+  /** Snapshot for display ("Riya Patel", or "@meera" for a transfer). */
   recipientName: string;
+  /** "transfer" paying a money request: that request. */
+  requestId?: string;
   note?: string;
   status: ApprovalStatus;
   /**

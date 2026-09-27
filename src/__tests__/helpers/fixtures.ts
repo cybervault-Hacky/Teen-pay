@@ -7,8 +7,8 @@ import {
   updateSpendingRulesTransition,
 } from "@/sandbox/family-transitions";
 import { databaseFromState } from "@/sandbox/persistence";
-import { databaseView } from "@/sandbox/scope";
-import { buildSeedState, SEED_FAMILY_ID, SEED_PARENT_ID, SEED_TEEN_ID } from "@/sandbox/seed";
+import { databaseView, mergeScope, scopeFor } from "@/sandbox/scope";
+import { buildSeedDatabase, buildSeedState, SEED_FAMILY_ID, SEED_PARENT_ID, SEED_TEEN_ID } from "@/sandbox/seed";
 import type { SandboxDatabase, SandboxState } from "@/sandbox/types";
 
 /** 26 Sep 2026, 11:30 IST — seed payments are on earlier days. */
@@ -159,4 +159,43 @@ export function toLegacyEntries(entries: LedgerEntry[]): Record<string, unknown>
           goalId: e.spaceId,
         };
   });
+}
+
+// ── Phase 8: multi-family databases (TeenPay-to-TeenPay tests) ────
+
+/**
+ * The full seed database (both families, Meera included) with Aarav
+ * linked to Priya through the real scoped transitions — and, when
+ * given, the parent's rules. `databaseFromState` is a single-family
+ * projection, so cross-family tests start here instead.
+ */
+export function linkedDatabase(
+  rules?: { daily?: number | null; perTx?: number | null; threshold?: number | null },
+): SandboxDatabase {
+  let db = buildSeedDatabase();
+  const run = (
+    actorId: string,
+    fn: (s: SandboxState) => { state: SandboxState; result: { ok: boolean } },
+    familyId?: string,
+  ) => {
+    const scope = scopeFor(db, actorId, familyId ? { familyId } : {});
+    if (!scope) throw new Error(`no scope for ${actorId}`);
+    const out = fn(scope.state);
+    if (!out.result.ok) throw new Error(`transition failed: ${JSON.stringify(out.result)}`);
+    db = mergeScope(db, scope.info, scope.state, out.state);
+  };
+  run(SEED_TEEN_ID, (s) => createInviteTransition(s, { ...TEEN, code: "TEEN-4821" }));
+  run(SEED_PARENT_ID, (s) => claimInviteTransition(s, { ...PARENT, code: "TEEN-4821" }), SEED_FAMILY_ID);
+  run(SEED_PARENT_ID, (s) => acceptInviteTransition(s, { ...PARENT, teenId: SEED_TEEN_ID }), SEED_FAMILY_ID);
+  if (rules) {
+    run(SEED_PARENT_ID, (s) =>
+      updateSpendingRulesTransition(s, {
+        ...PARENT,
+        teenId: SEED_TEEN_ID,
+        limits: { dailyLimit: rules.daily ?? null, perTransactionLimit: rules.perTx ?? null },
+        approval: { threshold: rules.threshold ?? null },
+      }),
+    );
+  }
+  return db;
 }

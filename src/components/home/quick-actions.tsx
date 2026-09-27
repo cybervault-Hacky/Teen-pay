@@ -3,7 +3,7 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   PiggyBank,
-  Target,
+  Send,
   type LucideIcon,
 } from "lucide-react";
 
@@ -14,10 +14,11 @@ interface QuickAction {
 }
 
 const actions: QuickAction[] = [
+  // Phase 8: TeenPay-to-TeenPay money first; Pay stays for contacts.
+  { label: "Send", icon: Send, href: "/send" },
+  { label: "Request", icon: ArrowDownLeft, href: "/request" },
   { label: "Pay", icon: ArrowUpRight, href: "/pay" },
-  { label: "Request", icon: ArrowDownLeft, href: "/pay?mode=request" },
   { label: "Save", icon: PiggyBank, href: "/money" },
-  { label: "Goals", icon: Target, href: "/money" },
 ];
 
 /**

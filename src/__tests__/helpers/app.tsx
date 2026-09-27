@@ -9,6 +9,9 @@ import HomePage from "@/app/page";
 import ParentPage from "@/app/parent/page";
 import PayPage from "@/app/pay/page";
 import ProfilePage from "@/app/profile/page";
+import RequestPage from "@/app/request/page";
+import RequestsPage from "@/app/requests/page";
+import SendPage from "@/app/send/page";
 import SignInPage from "@/app/sign-in/page";
 import { AppShell } from "@/components/layout/app-shell";
 import { RoleGate } from "@/components/sandbox/role-gate";
@@ -26,6 +29,9 @@ const PAGES: Record<string, () => React.ReactNode> = {
   "/profile": () => <ProfilePage />,
   "/sign-in": () => <SignInPage />,
   "/create-account": () => <CreateAccountPage />,
+  "/send": () => <SendPage />,
+  "/request": () => <RequestPage />,
+  "/requests": () => <RequestsPage />,
 };
 
 /**

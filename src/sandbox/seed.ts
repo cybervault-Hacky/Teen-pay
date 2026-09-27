@@ -35,9 +35,11 @@ import {
  * All identities are fictional sandbox identities; nothing here is
  * real and nothing is verified.
  *
- * Accounts: two fictional sandbox accounts, Aarav (teen) and Priya
- * (parent). Nobody is signed in initially — that's the auth layer's
- * job, and it starts signed out.
+ * Accounts: three fictional sandbox accounts — Aarav (teen) and Priya
+ * (parent) in the Sharma family, and Meera (teen, @meera) in her own
+ * family, so TeenPay-to-TeenPay sending and requesting can be tried
+ * straight away. Nobody is signed in initially — that's the auth
+ * layer's job, and it starts signed out.
  *
  * Family: the teen starts with no guardian connected, so the
  * linking journey (invite → review → connect) begins from a clean
@@ -52,11 +54,18 @@ import {
  *   allocated          ₹2,300 (Save + New Bike)
  *   Upcoming           ₹200 (one pending request)
  *   total              ₹4,150 (available + allocated)
+ *
+ * Meera's wallet: ₹1,200 of sandbox starting funds, all available
+ * (an empty default Save Space). No money has moved between the two
+ * teens, and there are no TeenPay money requests yet.
  */
 
 export const SEED_TEEN_ID = "usr_aarav";
 export const SEED_PARENT_ID = "usr_priya";
 export const SEED_FAMILY_ID = "fam_sharma";
+export const SEED_PEER_ID = "usr_meera";
+export const SEED_PEER_FAMILY_ID = "fam_kapoor";
+export const SEED_PEER_STARTING_FUNDS = 1200;
 const SEED_CREATED_AT = "2026-09-01T04:30:00Z";
 
 const teen: User = {
@@ -86,6 +95,51 @@ const parent: User = {
   createdAt: SEED_CREATED_AT,
   updatedAt: SEED_CREATED_AT,
 };
+
+const peer: User = {
+  id: SEED_PEER_ID,
+  role: "teen",
+  name: "Meera Kapoor",
+  displayName: "Meera",
+  username: "meera",
+  avatarInitials: "MK",
+  status: "active",
+  identitySource: "sandbox",
+  identifier: "sandbox:meera",
+  createdAt: SEED_CREATED_AT,
+  updatedAt: SEED_CREATED_AT,
+};
+
+/** Meera's own family: just her, no guardian connected. */
+function seedPeerFamily(): Family {
+  return {
+    id: SEED_PEER_FAMILY_ID,
+    name: "Meera's family",
+    members: [
+      {
+        id: `mem_${SEED_PEER_FAMILY_ID}_${SEED_PEER_ID}`,
+        familyId: SEED_PEER_FAMILY_ID,
+        accountId: SEED_PEER_ID,
+        role: "teen",
+        status: "active",
+        createdAt: SEED_CREATED_AT,
+        updatedAt: SEED_CREATED_AT,
+      },
+    ],
+    links: [
+      {
+        teenId: SEED_PEER_ID,
+        status: "not_linked",
+        guardianId: null,
+        inviteId: null,
+        updatedAt: SEED_CREATED_AT,
+      },
+    ],
+    controls: [],
+    invites: [],
+    createdAt: SEED_CREATED_AT,
+  };
+}
 
 function seedFamily(): Family {
   return {
@@ -181,6 +235,20 @@ function seedSpaces(): MoneySpace[] {
       deadline: "2026-11-30",
       displayOrder: 1,
     },
+    // Meera's default Save Space (empty), as every teen gets.
+    {
+      id: defaultSaveSpaceId(SEED_PEER_ID),
+      ownerAccountId: SEED_PEER_ID,
+      walletId: primaryWalletId(SEED_PEER_ID),
+      name: "Save",
+      type: "save",
+      icon: "piggy-bank",
+      status: "active",
+      displayOrder: 0,
+      isDefault: true,
+      createdAt: SEED_CREATED_AT,
+      updatedAt: SEED_CREATED_AT,
+    },
   ];
 }
 
@@ -196,6 +264,7 @@ function seedSpaces(): MoneySpace[] {
  */
 const TEEN_WALLET = primaryWalletId(SEED_TEEN_ID);
 const PARENT_WALLET = primaryWalletId(SEED_PARENT_ID);
+const PEER_WALLET = primaryWalletId(SEED_PEER_ID);
 const AARAV = { walletId: TEEN_WALLET, accountId: SEED_TEEN_ID, name: "Aarav" };
 const PRIYA = { walletId: PARENT_WALLET, accountId: SEED_PARENT_ID, name: "Priya" };
 
@@ -215,6 +284,7 @@ function seedDrafts(): OperationDraft[] {
   const [save, bike] = seedSpaces() as [MoneySpace, MoneySpace];
   return [
     depositDraft({ id: "seed_dep_priya", actorId: SEED_PARENT_ID, at: SEED_CREATED_AT, walletId: PARENT_WALLET, amount: PARENT_STARTING_FUNDS }),
+    depositDraft({ id: "seed_dep_meera", actorId: SEED_PEER_ID, at: SEED_CREATED_AT, walletId: PEER_WALLET, amount: SEED_PEER_STARTING_FUNDS }),
     transferDraft({ id: "seed_allow_1", actorId: SEED_PARENT_ID, at: "2026-09-08T03:30:00Z", from: PRIYA, to: AARAV, amount: 2500, purpose: "allowance" }),
     spaceMoveDraft({ id: "seed_goal_1", actorId: SEED_TEEN_ID, at: "2026-09-08T03:35:00Z", walletId: TEEN_WALLET, amount: 1500, space: bike, direction: "add" }),
     transferDraft({ id: "seed_allow_2", actorId: SEED_PARENT_ID, at: "2026-09-17T14:00:00Z", from: PRIYA, to: AARAV, amount: 1500, purpose: "allowance" }),
@@ -226,7 +296,7 @@ function seedDrafts(): OperationDraft[] {
 
 function seedJournal(): Journal {
   let journal: Journal = {
-    wallets: [seedWallet(SEED_TEEN_ID), seedWallet(SEED_PARENT_ID)],
+    wallets: [seedWallet(SEED_TEEN_ID), seedWallet(SEED_PARENT_ID), seedWallet(SEED_PEER_ID)],
     ledger: [],
     operations: [],
     spaces: seedSpaces(),
@@ -295,8 +365,8 @@ export function buildSeedDatabase(): SandboxDatabase {
   const journal = seedJournal();
   return {
     version: SANDBOX_SCHEMA_VERSION,
-    accounts: [{ ...teen }, { ...parent }],
-    families: [seedFamily()],
+    accounts: [{ ...teen }, { ...parent }, { ...peer }],
+    families: [seedFamily(), seedPeerFamily()],
     wallets: journal.wallets,
     ledger: journal.ledger,
     operations: journal.operations,
@@ -310,9 +380,14 @@ export function buildSeedDatabase(): SandboxDatabase {
         requests: seedRequests.map((request) => ({ ...request })),
         approvals: [],
       },
+      { teenId: SEED_PEER_ID, requests: [], approvals: [] },
     ],
+    peerRequests: [],
     notifications: seedNotifications.map((notification) => ({ ...notification })),
-    familyLogs: [{ familyId: SEED_FAMILY_ID, events: [] }],
+    familyLogs: [
+      { familyId: SEED_FAMILY_ID, events: [] },
+      { familyId: SEED_PEER_FAMILY_ID, events: [] },
+    ],
     securityEvents: [],
     recipients: recipients.map((recipient) => ({ ...recipient })),
   };

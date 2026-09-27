@@ -111,8 +111,19 @@ export function TransactionDetail({ entryId, onClose }: TransactionDetailProps) 
                   {tx.space.archived ? " (archived)" : ""}
                 </Link>
               </DetailRow>
+            ) : tx.peer ? (
+              <DetailRow label={tx.counterparty.label}>
+                {tx.peer.handle} · {tx.peer.name}
+              </DetailRow>
             ) : (
               <DetailRow label={tx.counterparty.label}>{tx.counterparty.name}</DetailRow>
+            )}
+            {tx.request && (
+              <DetailRow label="Money request">
+                {tx.request.direction === "outgoing" ? "You asked" : `${tx.peer?.handle ?? "They"} asked`} ·{" "}
+                {tx.request.statusLabel}
+                {tx.request.note ? ` · “${tx.request.note}”` : ""}
+              </DetailRow>
             )}
             <DetailRow label="Wallet">{tx.walletLabel}</DetailRow>
             {tx.approval && (

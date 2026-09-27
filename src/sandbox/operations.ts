@@ -539,12 +539,16 @@ interface WalletParty {
   walletId: string;
   accountId: string;
   name: string;
+  /** Peer transfers: the TeenPay ID shown to the other side ("@meera"). */
+  handle?: string;
 }
 
 /**
  * Wallet-to-wallet movement: one debit and one credit in a single
  * atomic operation. `purpose: "allowance"` is pocket money from a
- * guardian's wallet to a teen's wallet.
+ * guardian's wallet to a teen's wallet; `"transfer"` (the default) is
+ * TeenPay-to-TeenPay money — a send, or a paid money request
+ * (`requestId`, recorded on the operation and both entries).
  */
 export function transferDraft(
   input: Base & {
@@ -553,24 +557,34 @@ export function transferDraft(
     amount: number;
     note?: string;
     purpose?: "transfer" | "allowance";
+    requestId?: string;
   },
 ): OperationDraft {
   const allowance = input.purpose === "allowance";
   const description = input.note ?? (allowance ? "Pocket money" : "Transfer");
+  const party = (p: WalletParty): LedgerCounterparty => ({
+    kind: "account",
+    id: p.accountId,
+    name: p.name,
+    ...(p.handle ? { handle: p.handle } : {}),
+  });
+  const requestId = allowance ? undefined : input.requestId;
   return {
     id: input.id,
     type: allowance ? "allowance" : "transfer",
     actorId: input.actorId,
     at: input.at,
     description,
+    ...(requestId ? { requestId } : {}),
     legs: [
       {
         walletId: input.from.walletId,
         entryType: allowance ? "allowance_debit" : "transfer_out",
         direction: "debit",
         amount: input.amount,
-        counterparty: { kind: "account", id: input.to.accountId, name: input.to.name },
+        counterparty: party(input.to),
         description,
+        ...(requestId ? { requestId } : {}),
       },
       {
         walletId: input.to.walletId,
@@ -579,8 +593,9 @@ export function transferDraft(
         amount: input.amount,
         counterparty: allowance
           ? { kind: "guardian", id: input.from.accountId, name: input.from.name }
-          : { kind: "account", id: input.from.accountId, name: input.from.name },
+          : party(input.from),
         description,
+        ...(requestId ? { requestId } : {}),
       },
     ],
   };

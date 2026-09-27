@@ -22,10 +22,12 @@ import {
 /**
  * Guardian rules engine — pure and deterministic.
  *
- * Every payment decision in the app goes through `evaluatePayment`:
- * the pay flow uses it for live guidance, and the payment and
- * approval transitions use it again before anything is written.
- * The UI never re-implements a rule.
+ * Every spending decision in the app goes through one core
+ * (`decideSpend`), exposed as `evaluatePayment` (sandbox contacts) and
+ * `evaluateTransfer` (TeenPay-to-TeenPay: sending money and paying a
+ * money request). The flows use it for live guidance, and the
+ * transitions use it again before anything is written. The UI never
+ * re-implements a rule.
  *
  *   amount → wallet status → recipient → balance → per-payment limit
  *          → approval rule ──(above threshold)──▶ needs approval
@@ -109,6 +111,13 @@ export interface PaymentCheckInput {
   at: string;
 }
 
+/** A TeenPay-to-TeenPay transfer (the recipient is checked by the peer engine). */
+export interface TransferCheckInput {
+  teenId: string;
+  amount: number;
+  at: string;
+}
+
 export type PaymentDecision =
   | { kind: "execute" }
   | { kind: "needs_approval"; guardian: User; threshold: number }
@@ -118,17 +127,32 @@ function reject(error: SandboxError): PaymentDecision {
   return { kind: "rejected", error };
 }
 
+/** The one message for spending more than the available balance. */
+export function notEnoughAvailable(available: number): SandboxError {
+  return {
+    code: "insufficient_balance",
+    message: `Not enough available money. You have ${formatINR(available)} available.`,
+  };
+}
+
 /**
- * Decides what should happen to a payment. `mode: "approved"` is
- * used when a guardian has approved it: the approval rule and the
- * daily limit are then satisfied by that decision, but amount,
- * balance, and the per-payment ceiling are re-checked.
+ * The single spending decision. Contact payments and TeenPay
+ * transfers differ only in how the payee is checked (`payeeProblem`)
+ * and in the insufficient-balance wording; the order, the balance
+ * (available only — Money Spaces are never spendable), the limits and
+ * the approval threshold are shared, so there is exactly one set of
+ * guardian rules.
  */
-export function evaluatePayment(
+function decideSpend(
   state: SandboxState,
-  input: PaymentCheckInput,
-  mode: "teen" | "approved" = "teen",
+  input: { teenId: string; amount: number; at: string },
+  mode: "teen" | "approved",
+  payeeProblem: () => SandboxError | null,
+  insufficient: (available: number) => SandboxError,
 ): PaymentDecision {
+  if (typeof input.amount !== "number") {
+    return reject({ code: "invalid_amount", message: "Enter an amount above zero." });
+  }
   const amountProblem = amountError(input.amount);
   if (amountProblem) return reject(amountProblem);
 
@@ -139,20 +163,11 @@ export function evaluatePayment(
   const blocked = walletMutationError(wallet);
   if (blocked) return reject(blocked);
 
-  if (!state.recipients.some((r) => r.id === input.recipientId)) {
-    return reject({
-      code: "unknown_recipient",
-      message: "That recipient is no longer available.",
-    });
-  }
+  const payee = payeeProblem();
+  if (payee) return reject(payee);
 
   const available = walletBalance(state.ledger, wallet.id);
-  if (input.amount > available) {
-    return reject({
-      code: "insufficient_balance",
-      message: `You have ${formatINR(available)} available.`,
-    });
-  }
+  if (input.amount > available) return reject(insufficient(available));
 
   const controls = activeControls(state, input.teenId);
   if (!controls) return { kind: "execute" };
@@ -188,6 +203,48 @@ export function evaluatePayment(
   }
 
   return { kind: "execute" };
+}
+
+/**
+ * Decides what should happen to a payment to a sandbox contact.
+ * `mode: "approved"` is used when a guardian has approved it: the
+ * approval rule and the daily limit are then satisfied by that
+ * decision, but amount, balance, and the per-payment ceiling are
+ * re-checked.
+ */
+export function evaluatePayment(
+  state: SandboxState,
+  input: PaymentCheckInput,
+  mode: "teen" | "approved" = "teen",
+): PaymentDecision {
+  return decideSpend(
+    state,
+    input,
+    mode,
+    () =>
+      state.recipients.some((r) => r.id === input.recipientId)
+        ? null
+        : { code: "unknown_recipient", message: "That recipient is no longer available." },
+    (available) => ({
+      code: "insufficient_balance",
+      message: `You have ${formatINR(available)} available.`,
+    }),
+  );
+}
+
+/**
+ * Decides a TeenPay-to-TeenPay transfer from `teenId`'s wallet — the
+ * same rules as a payment (see `decideSpend`). The recipient account
+ * is resolved and checked by the peer engine before this runs; this
+ * is only ever called with the sender's own scope (or, on approval,
+ * the approving guardian's).
+ */
+export function evaluateTransfer(
+  state: SandboxState,
+  input: TransferCheckInput,
+  mode: "teen" | "approved" = "teen",
+): PaymentDecision {
+  return decideSpend(state, input, mode, () => null, notEnoughAvailable);
 }
 
 // ── Rule validation (guardian inputs) ────────────────────────────

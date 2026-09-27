@@ -19,6 +19,7 @@ import { ActivityPreview } from "./activity-preview";
 import { BalanceCard } from "./balance-card";
 import { HomeHeader } from "./home-header";
 import { PendingRequests } from "./pending-requests";
+import { PeerRequestsCard } from "./peer-requests-card";
 import { QuickActions } from "./quick-actions";
 import { SpacesSummary } from "./spaces-summary";
 import { NextPocketMoney } from "./next-pocket-money";
@@ -83,6 +84,8 @@ export function HomeContent() {
             </div>
           </section>
         )}
+
+        <PeerRequestsCard />
 
         {pending.length > 0 && (
           <PendingRequests

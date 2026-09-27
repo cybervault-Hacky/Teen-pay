@@ -6,6 +6,7 @@ import type {
   LedgerEntry,
   MoneyOperation,
   MoneyRequest,
+  PeerRequest,
   Recipient,
   MoneySpace,
   PocketMoneySchedule,
@@ -32,7 +33,7 @@ import type {
  *      own records with an append-only run history; the Phase 3
  *      preview inside guardian controls became a paused schedule).
  */
-export const SANDBOX_SCHEMA_VERSION = 6;
+export const SANDBOX_SCHEMA_VERSION = 7;
 
 // Money limits live in the domain (one definition); re-exported here
 // for existing imports.
@@ -101,6 +102,12 @@ export interface SandboxDatabase {
   spaces: MoneySpace[];
   pocketMoneySchedules: PocketMoneySchedule[];
   teenRecords: TeenRecords[];
+  /**
+   * TeenPay-to-TeenPay money requests (v7). Not per family: the two
+   * parties can be in different families. Written only by the peer
+   * engine (`peer-transitions.ts`).
+   */
+  peerRequests: PeerRequest[];
   notifications: AppNotification[];
   familyLogs: FamilyLog[];
   securityEvents: SecurityEvent[];
@@ -133,6 +140,12 @@ export interface SandboxState {
   requests: MoneyRequest[];
   /** Guardian approval requests (pending approvals move nothing). */
   approvals: ApprovalRequest[];
+  /**
+   * TeenPay money requests the viewer is a party to (requester or
+   * payer) — nobody else's. Read-only in a scope: only the peer engine
+   * writes them.
+   */
+  peerRequests: PeerRequest[];
   /** Per-recipient notifications, newest first. */
   notifications: AppNotification[];
   /** Non-financial family/approval events, newest first (capped). */
@@ -187,7 +200,10 @@ export type SandboxErrorCode =
   | "not_refundable"
   | "unknown_schedule"
   | "invalid_schedule"
-  | "stale_schedule";
+  | "stale_schedule"
+  | "self_transfer"
+  | "unknown_request"
+  | "request_expired";
 
 /**
  * A typed, human-readable error. `code` drives logic; `message`
@@ -207,7 +223,9 @@ export interface SandboxError {
     | "frequency"
     | "day"
     | "startDate"
-    | "endDate";
+    | "endDate"
+    | "recipient"
+    | "note";
 }
 
 export type SandboxResult<T = undefined> =

@@ -81,7 +81,10 @@ describe("home — notifications", () => {
     const links = screen.getAllByRole("link");
     const pay = links.find((l) => l.textContent === "Pay");
     const request = links.find((l) => l.textContent === "Request");
+    const send = links.find((l) => l.textContent === "Send");
     expect(pay?.getAttribute("href")).toBe("/pay");
-    expect(request?.getAttribute("href")).toBe("/pay?mode=request");
+    // Phase 8: Request asks another TeenPay teen (contacts: /pay's toggle).
+    expect(request?.getAttribute("href")).toBe("/request");
+    expect(send?.getAttribute("href")).toBe("/send");
   });
 });

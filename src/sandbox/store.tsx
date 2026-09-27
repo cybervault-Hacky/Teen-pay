@@ -88,6 +88,21 @@ import {
   type PayOutcome,
   type TransitionOutput,
 } from "./transitions";
+import {
+  acceptMoneyRequestTransition,
+  approveTransferTransition,
+  cancelMoneyRequestTransition,
+  createMoneyRequestTransition,
+  declineMoneyRequestTransition,
+  expireMoneyRequestsTransition,
+  sendMoneyTransition,
+  type AcceptMoneyRequestOutcome,
+  type MoneyRequestOutcome,
+  type PeerOutput,
+  type SendMoneyOutcome,
+} from "./peer-transitions";
+import { lookupPeer, searchPeers } from "./peer";
+import type { PeerProfile } from "@/domain";
 import type { SandboxDatabase, SandboxError, SandboxResult, SandboxState } from "./types";
 
 /**
@@ -231,6 +246,39 @@ export interface SandboxActions {
     scheduleId?: string;
   }) => SandboxResult<ExecutePocketMoneyResult>;
 
+  // ── TeenPay-to-TeenPay money (see peer-transitions.ts) ──
+  /**
+   * Sends from the viewer's available balance to another TeenPay teen,
+   * named by TeenPay ID ("@meera"). `idempotencyKey` is generated once
+   * per send (when review opens); a repeat returns the original result
+   * and never posts twice. Above the guardian's threshold, it waits
+   * for approval instead — nothing moves until then.
+   */
+  sendMoney: (input: {
+    recipient: string;
+    amount: number;
+    note?: string;
+    idempotencyKey: string;
+  }) => SandboxResult<SendMoneyOutcome>;
+  /** Asks another teen for money. Moves nothing. */
+  createMoneyRequest: (input: {
+    payer: string;
+    amount: number;
+    note?: string;
+    idempotencyKey: string;
+  }) => SandboxResult<MoneyRequestOutcome>;
+  /** The payer pays a pending request — exactly once. */
+  acceptMoneyRequest: (requestId: string) => SandboxResult<AcceptMoneyRequestOutcome>;
+  /** The payer declines. No money moves. */
+  declineMoneyRequest: (requestId: string) => SandboxResult<{ status: "declined" }>;
+  /** The requester withdraws a pending request. No money moves. */
+  cancelMoneyRequest: (requestId: string) => SandboxResult<{ status: "cancelled" }>;
+  /**
+   * Records expiry for the viewer's requests past their 7 days (no
+   * timer: expiry is computed from timestamps; this only writes it down).
+   */
+  expireMoneyRequests: () => SandboxResult<{ expired: number }>;
+
   // ── Approvals ──
   decideApproval: (
     approvalId: string,
@@ -274,6 +322,15 @@ export interface SandboxContextValue {
   scope: ScopeInfo;
   /** Who "Switch role" would move to, per role. */
   switchTargets: Record<UserRole, User | null>;
+  /**
+   * Finding people to send to or request from: only eligible TeenPay
+   * teens, only display-safe profiles (@handle, name, initials) — no
+   * account, wallet or family details. Never includes the viewer.
+   */
+  peers: {
+    search: (query: string) => PeerProfile[];
+    lookup: (teenPayId: string) => PeerProfile | null;
+  };
 }
 
 const SandboxDataContext = createContext<SandboxDataValue | null>(null);
@@ -411,6 +468,29 @@ export function SandboxProvider({
         }
         commit(merged);
       }
+      return output.result;
+    }
+
+    /**
+     * Runs a database-level peer transition as the acting account.
+     * TeenPay transfers cross families, so they can't run inside one
+     * family scope; the engine authorizes the actor itself (and posts
+     * through the one ledger write path). Same guarantees as
+     * `dispatch`: signed in, active account, all-or-nothing.
+     */
+    function dispatchDb<T>(
+      transition: (current: SandboxDatabase, actorId: string, at: string) => PeerOutput<T>,
+    ): SandboxResult<T> {
+      const actor = viewerRef.current;
+      if (!actor) return { ok: false, error: NOT_SIGNED_IN };
+      if (!scopeFor(dbRef.current, actor)) return { ok: false, error: ACCOUNT_UNAVAILABLE };
+      let output: PeerOutput<T>;
+      try {
+        output = transition(dbRef.current, actor, new Date().toISOString());
+      } catch {
+        return { ok: false, error: SOMETHING_WENT_WRONG };
+      }
+      if (output.result.ok) commit(output.db);
       return output.result;
     }
 
@@ -563,8 +643,32 @@ export function SandboxProvider({
       executeDuePocketMoney: (input = {}) =>
         dispatch((s) => executeDuePocketMoneyTransition(s, input)),
 
-      decideApproval: (approvalId, decision) =>
-        dispatch((s) => decideApprovalTransition(s, { approvalId, decision })),
+      sendMoney: (input) =>
+        dispatchDb((db, actorId, at) => sendMoneyTransition(db, { ...input, actorId, at })),
+      createMoneyRequest: (input) =>
+        dispatchDb((db, actorId, at) => createMoneyRequestTransition(db, { ...input, actorId, at })),
+      acceptMoneyRequest: (requestId) =>
+        dispatchDb((db, actorId, at) => acceptMoneyRequestTransition(db, { actorId, at, requestId })),
+      declineMoneyRequest: (requestId) =>
+        dispatchDb((db, actorId, at) => declineMoneyRequestTransition(db, { actorId, at, requestId })),
+      cancelMoneyRequest: (requestId) =>
+        dispatchDb((db, actorId, at) => cancelMoneyRequestTransition(db, { actorId, at, requestId })),
+      expireMoneyRequests: () =>
+        dispatchDb((db, actorId, at) => expireMoneyRequestsTransition(db, { actorId, at })),
+
+      decideApproval: (approvalId, decision) => {
+        // Approving a TeenPay transfer executes across families, so it
+        // runs in the peer engine (which re-checks everything). Declines
+        // move nothing and stay on the family path.
+        const actor = viewerRef.current;
+        const approval = actor
+          ? scopeFor(dbRef.current, actor)?.state.approvals.find((a) => a.id === approvalId)
+          : undefined;
+        if (approval?.kind === "transfer" && decision === "approve") {
+          return dispatchDb((db, actorId, at) => approveTransferTransition(db, { actorId, at, approvalId }));
+        }
+        return dispatch((s) => decideApprovalTransition(s, { approvalId, decision }));
+      },
       cancelApproval: (approvalId) => dispatch((s) => cancelApprovalTransition(s, { approvalId })),
 
       resetSandbox: () => resetRef.current(),
@@ -637,6 +741,10 @@ export function SandboxProvider({
       switchTargets: {
         teen: sandboxSwitchTarget(db, viewerId, "teen"),
         parent: sandboxSwitchTarget(db, viewerId, "parent"),
+      },
+      peers: {
+        search: (query) => searchPeers(db, viewerId, query),
+        lookup: (teenPayId) => lookupPeer(db, viewerId, teenPayId),
       },
     };
   }, [scope, viewerId, storageStatus, actions, db]);

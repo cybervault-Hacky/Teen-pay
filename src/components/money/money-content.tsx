@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, History, PiggyBank, Target } from "lucide-react";
+import { ArrowDownLeft, ChevronDown, History, Inbox, PiggyBank, Send, Target } from "lucide-react";
 import { formatDayLabel } from "@/lib/format";
 import { entryIcon } from "@/lib/transaction-icons";
 import {
   selectActiveSpaces,
   selectArchivedSpaces,
   selectMoneySummary,
+  selectPendingPeerRequests,
   selectRecentSpaceMoves,
   selectTeenWallet,
   type SpaceView,
@@ -31,9 +32,10 @@ import { SpacesInfoButton } from "./spaces-info";
 /**
  * The Money screen, in order of what matters:
  *   1. available money (the wallet) and how the total splits
- *   2. Money Spaces (Save, goals, custom)
- *   3. recent Space activity
- *   4. actions (create a goal or a space)
+ *   2. send / request money to other TeenPay teens (from available)
+ *   3. Money Spaces (Save, goals, custom)
+ *   4. recent Space activity
+ *   5. actions (create a goal or a space)
  * Every figure is derived from the ledger through selectors; every
  * move goes through the store into the one ledger write path.
  */
@@ -51,6 +53,7 @@ export function MoneyContent() {
   const active = selectActiveSpaces(state);
   const archived = selectArchivedSpaces(state);
   const recent = selectRecentSpaceMoves(state, 5);
+  const openRequests = selectPendingPeerRequests(state).length;
   const locked = !wallet || wallet.status !== "active";
   const moving: SpaceView | null = move ? (active.find((s) => s.id === move.spaceId) ?? null) : null;
 
@@ -105,6 +108,23 @@ export function MoneyContent() {
         <p role="status" aria-live="polite" className={notice ? "text-sm text-success" : "sr-only"}>
           {notice}
         </p>
+
+        <section aria-label="Send and request">
+          <div className="grid grid-cols-2 gap-2.5">
+            <Button variant="secondary" href="/send">
+              <Send className="h-4 w-4" aria-hidden />
+              Send
+            </Button>
+            <Button variant="secondary" href="/request">
+              <ArrowDownLeft className="h-4 w-4" aria-hidden />
+              Request
+            </Button>
+          </div>
+          <Button variant="ghost" size="sm" href="/requests" className="mt-2 w-full">
+            <Inbox className="h-4 w-4" aria-hidden />
+            {openRequests > 0 ? `Requests · ${openRequests} open` : "Requests"}
+          </Button>
+        </section>
 
         <section aria-label="Money Spaces">
           <SectionHeader title="Money Spaces" />

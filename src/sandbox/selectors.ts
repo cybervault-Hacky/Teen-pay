@@ -1,4 +1,8 @@
 import {
+  effectivePeerRequestStatus,
+  PEER_REQUEST_STATUS_LABEL,
+  type PeerRequest,
+  type PeerRequestStatus,
   deadlineInfo,
   describePocketMoneyCadence,
   isInviteExpired,
@@ -72,8 +76,8 @@ const TYPE_LABELS: Record<LedgerEntryType, string> = {
   allowance_debit: "Pocket money sent",
   payment_sent: "Payment sent",
   payment_received: "Payment received",
-  transfer_out: "Transfer sent",
-  transfer_in: "Transfer received",
+  transfer_out: "Money sent",
+  transfer_in: "Money received",
   refund: "Refund",
   reversal: "Reversal",
   adjustment: "Adjustment",
@@ -179,13 +183,25 @@ function titleFor(state: SandboxState, entry: LedgerEntry): string {
       // Scheduled pocket money reads as what it is; one-off pocket
       // money keeps its original title.
       return entry.scheduleId ? "Pocket money received" : TYPE_LABELS[entry.type];
+    case "transfer_in":
+      // The requester's side of a paid money request.
+      return entry.requestId ? "Money request paid" : TYPE_LABELS[entry.type];
     default:
       return TYPE_LABELS[entry.type];
   }
 }
 
+/** The other side of an entry as shown: a peer's @handle, else the name. */
+function partyName(entry: LedgerEntry): string {
+  return entry.counterparty.handle ?? entry.counterparty.name;
+}
+
 function subtitleFor(entry: LedgerEntry): string {
   switch (entry.type) {
+    case "transfer_out":
+      return `To ${partyName(entry)}${entry.requestId ? " · Request" : ""}`;
+    case "transfer_in":
+      return `From ${partyName(entry)}${entry.requestId ? " · Request" : ""}`;
     case "space_allocation":
       return "From available balance";
     case "space_release":
@@ -249,6 +265,10 @@ export function getTransaction(state: SandboxState, entryId: string): Transactio
   const original = entry.relatedEntryId
     ? state.ledger.find((e) => e.id === entry.relatedEntryId)
     : undefined;
+  // Only requests the viewer is a party to are in scope.
+  const peerRequest = entry.requestId
+    ? state.peerRequests.find((r) => r.requestId === entry.requestId)
+    : undefined;
   // Only the owner's own Spaces are in scope, so only they get a link.
   const space = entry.spaceId
     ? state.spaces.find((s) => s.id === entry.spaceId && s.ownerAccountId === viewerId)
@@ -269,8 +289,22 @@ export function getTransaction(state: SandboxState, entryId: string): Transactio
         : `${owner?.displayName ?? "Their"}'s wallet`,
     counterparty: {
       label: entry.direction === "credit" ? "From" : "To",
-      name: isSpaceEntry(entry) ? spaceNameFor(state, entry) : entry.counterparty.name,
+      name: isSpaceEntry(entry) ? spaceNameFor(state, entry) : partyName(entry),
     },
+    ...(entry.counterparty.handle
+      ? { peer: { handle: entry.counterparty.handle, name: entry.counterparty.name } }
+      : {}),
+    ...(peerRequest
+      ? {
+          request: {
+            direction:
+              peerRequest.payerAccountId === viewerId ? ("incoming" as const) : ("outgoing" as const),
+            ...(peerRequest.note ? { note: peerRequest.note } : {}),
+            createdAt: peerRequest.createdAt,
+            statusLabel: PEER_REQUEST_STATUS_LABEL[peerRequest.status],
+          },
+        }
+      : {}),
     ...(entry.approvalId
       ? {
           approval: {
@@ -777,4 +811,164 @@ export function selectPocketMoneyTotals(
     if (e.type === "allowance_debit") sent += e.amount;
   }
   return { received, sent };
+}
+
+// ── TeenPay-to-TeenPay money (the query API) ─────────────────────
+//
+// Screens never read `state.peerRequests` or the ledger themselves:
+// requests come back as display-safe `PeerRequestView`s (the other
+// person's @handle and name — never an id), with the status as it is
+// *now* (a pending request past its 7 days reads as expired).
+
+/** The viewer's sendable money: their own available balance only. */
+export function selectSendableBalance(state: SandboxState): number {
+  const wallet = selectViewerWallet(state);
+  return wallet ? walletBalance(state.ledger, wallet.id) : 0;
+}
+
+export interface PeerRequestView {
+  requestId: string;
+  /** incoming: someone asks the viewer to pay; outgoing: the viewer asked. */
+  direction: "incoming" | "outgoing";
+  amount: number;
+  note?: string;
+  status: PeerRequestStatus;
+  statusLabel: string;
+  /** The other person, display-safe. */
+  party: { handle: string; name: string; initials: string };
+  createdAt: string;
+  expiresAt: string;
+  respondedAt?: string;
+  /** The TRF- reference of the transfer that paid it. */
+  reference?: string;
+  /** Incoming only: waiting for the viewer's parent to approve paying it. */
+  awaitingApproval: boolean;
+}
+
+function initialsOfName(name: string): string {
+  const parts = name.split(" ").filter(Boolean);
+  const first = parts[0]?.[0] ?? "";
+  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
+  return (first + last).toUpperCase() || "?";
+}
+
+function toPeerRequestView(state: SandboxState, request: PeerRequest, now: string): PeerRequestView {
+  const viewerId = state.session.currentUserId;
+  const incoming = request.payerAccountId === viewerId;
+  const status = effectivePeerRequestStatus(request, now);
+  const name = incoming ? request.requesterName : request.payerName;
+  return {
+    requestId: request.requestId,
+    direction: incoming ? "incoming" : "outgoing",
+    amount: request.amount,
+    ...(request.note ? { note: request.note } : {}),
+    status,
+    statusLabel: PEER_REQUEST_STATUS_LABEL[status],
+    party: {
+      handle: incoming ? request.requesterHandle : request.payerHandle,
+      name,
+      initials: initialsOfName(name),
+    },
+    createdAt: request.createdAt,
+    expiresAt: request.expiresAt,
+    ...(request.respondedAt ? { respondedAt: request.respondedAt } : {}),
+    ...(request.resultingPaymentReference ? { reference: request.resultingPaymentReference } : {}),
+    awaitingApproval:
+      incoming &&
+      status === "pending" &&
+      state.approvals.some((a) => a.requestId === request.requestId && a.status === "pending"),
+  };
+}
+
+/** Minute resolution: expiry is shown to the minute, and memo stays warm. */
+function minuteOf(now: string): string {
+  return now.slice(0, 16);
+}
+
+const peerViewCache = new WeakMap<
+  readonly PeerRequest[],
+  Map<string, { approvals: readonly ApprovalRequest[]; views: PeerRequestView[] }>
+>();
+
+/** Every request the viewer is a party to, newest first. Memoized. */
+export function selectPeerRequests(
+  state: SandboxState,
+  now: string = new Date().toISOString(),
+): PeerRequestView[] {
+  const key = `${state.session.currentUserId}|${minuteOf(now)}`;
+  const byKey = peerViewCache.get(state.peerRequests) ?? new Map();
+  const cached = byKey.get(key);
+  if (cached && cached.approvals === state.approvals) return cached.views;
+  const views = state.peerRequests
+    .filter(
+      (r) =>
+        r.payerAccountId === state.session.currentUserId ||
+        r.requesterAccountId === state.session.currentUserId,
+    )
+    .map((r) => toPeerRequestView(state, r, now))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  byKey.set(key, { approvals: state.approvals, views });
+  peerViewCache.set(state.peerRequests, byKey);
+  return views;
+}
+
+/** Pending requests asking the viewer to pay. */
+export function selectIncomingRequests(state: SandboxState, now?: string): PeerRequestView[] {
+  return selectPeerRequests(state, now).filter((r) => r.direction === "incoming" && r.status === "pending");
+}
+
+/** Pending requests the viewer sent. */
+export function selectOutgoingRequests(state: SandboxState, now?: string): PeerRequestView[] {
+  return selectPeerRequests(state, now).filter((r) => r.direction === "outgoing" && r.status === "pending");
+}
+
+/** Everything still open, either way. */
+export function selectPendingPeerRequests(state: SandboxState, now?: string): PeerRequestView[] {
+  return selectPeerRequests(state, now).filter((r) => r.status === "pending");
+}
+
+/** Accepted, declined, cancelled and expired — most recently settled first. */
+export function selectRequestHistory(state: SandboxState, now?: string): PeerRequestView[] {
+  return selectPeerRequests(state, now)
+    .filter((r) => r.status !== "pending")
+    .sort((a, b) => (b.respondedAt ?? b.createdAt).localeCompare(a.respondedAt ?? a.createdAt));
+}
+
+/** One request the viewer is a party to, or null (never anyone else's). */
+export function selectPeerRequest(
+  state: SandboxState,
+  requestId: string,
+  now?: string,
+): PeerRequestView | null {
+  return selectPeerRequests(state, now).find((r) => r.requestId === requestId) ?? null;
+}
+
+/** The status of one of the viewer's requests right now. */
+export function selectRequestStatus(state: SandboxState, requestId: string, now?: string): PeerRequestStatus | null {
+  return selectPeerRequest(state, requestId, now)?.status ?? null;
+}
+
+/** The viewer's own ledger row for the transfer that paid a request. */
+export function selectRelatedPayment(
+  state: SandboxState,
+  requestId: string,
+): { entryId: string; transaction: Transaction } | null {
+  const wallet = selectViewerWallet(state);
+  if (!wallet) return null;
+  const entry = state.ledger.find((e) => e.requestId === requestId && e.walletId === wallet.id);
+  return entry ? { entryId: entry.id, transaction: toTransaction(state, entry) } : null;
+}
+
+/** The viewer's TeenPay transfers (sent and received), newest first. */
+export function selectPeerTransfers(state: SandboxState): { entryId: string; transaction: Transaction }[] {
+  const wallet = selectViewerWallet(state);
+  if (!wallet) return [];
+  return listWalletEntries(state, wallet.id)
+    .filter((e) => e.type === "transfer_in" || e.type === "transfer_out")
+    .map((entry) => ({ entryId: entry.id, transaction: toTransaction(state, entry) }));
+}
+
+/** How the other side of a peer entry is shown ("@meera"). */
+export function selectRecipientDisplay(entry: Pick<LedgerEntry, "counterparty">): string {
+  return entry.counterparty.handle ?? entry.counterparty.name;
 }

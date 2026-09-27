@@ -7,6 +7,7 @@ import {
   migrateV3,
   migrateV4,
   migrateV5,
+  migrateV6,
 } from "@/sandbox/persistence";
 import {
   SANDBOX_BACKUP_KEY,
@@ -163,8 +164,8 @@ describe("migration — Phase 3 (v2) → Phase 4 (v3)", () => {
   it("an in-flight invite (claimed) survives with a fresh expiry and a pending membership", () => {
     let s = must(createInviteTransition(buildSeedState(), { ...TEEN, code: "TEEN-4821" }));
     s = must(claimInviteTransition(s, { ...PARENT, code: "TEEN-4821" }));
-    // Phase 7: v2 → v3 → v4 → v5 → v6.
-    const db = migrateV5(migrateV4(migrateV3(migrateV2(JSON.parse(JSON.stringify(toV2(s))), NOW)), NOW), NOW);
+    // Phase 8: v2 → v3 → v4 → v5 → v6 → v7.
+    const db = migrateV6(migrateV5(migrateV4(migrateV3(migrateV2(JSON.parse(JSON.stringify(toV2(s))), NOW)), NOW), NOW));
     expect(isSandboxDatabase(db)).toBe(true);
     const invite = db.families[0]!.invites[0]!;
     expect(invite).toMatchObject({ code: "TEEN-4821", status: "claimed", claimedBy: SEED_PARENT_ID });

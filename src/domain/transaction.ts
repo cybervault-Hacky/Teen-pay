@@ -52,4 +52,10 @@ export interface TransactionDetails extends Transaction {
   compensatedBy: { reference: string; amount: number; kind: "refund" | "reversal" }[];
   /** Rupees still refundable (payments only; 0 otherwise). */
   refundable: number;
+  /**
+   * TeenPay-to-TeenPay transfers: the other person's display identity
+   * (never an id), and the money request it paid, if any.
+   */
+  peer?: { handle: string; name: string };
+  request?: { direction: "incoming" | "outgoing"; note?: string; createdAt: string; statusLabel: string };
 }

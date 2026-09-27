@@ -148,7 +148,7 @@ describe("auth gate and screens", () => {
     expect(await screen.findByRole("heading", { name: "Welcome to TeenPay" })).toBeInTheDocument();
     expect(window.localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
     const db = storedDb();
-    expect(db?.accounts.length).toBe(2); // data kept
+    expect(db?.accounts.length).toBe(3); // data kept (Aarav, Priya, Meera)
     const types = db?.securityEvents.filter((e) => e.accountId === SEED_TEEN_ID).map((e) => e.type);
     expect(types).toEqual(expect.arrayContaining(["sign_in", "sign_out"]));
   });
@@ -193,7 +193,7 @@ describe("auth gate and screens", () => {
     await user.click(await screen.findByRole("button", { name: /continue as teen/i }));
     await user.click(await screen.findByRole("button", { name: /sandbox: expire session now/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/session has expired/i);
-    expect(storedDb()?.accounts.length).toBe(2);
+    expect(storedDb()?.accounts.length).toBe(3);
   });
 
   it("an expired session found on reload shows the expiry message", async () => {

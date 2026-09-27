@@ -65,6 +65,10 @@ export const PROTECTED_ROUTES = [
   "/family",
   "/parent",
   "/profile",
+  // Phase 8: TeenPay-to-TeenPay money.
+  "/send",
+  "/request",
+  "/requests",
 ] as const;
 
 export function isAuthRoute(pathname: string): boolean {

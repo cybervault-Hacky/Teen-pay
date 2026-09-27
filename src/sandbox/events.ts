@@ -166,6 +166,81 @@ function drafts(state: SandboxState, event: DomainEvent): Draft[] {
           body: `${event.recipientName} paid ${formatINR(event.amount)}.`,
         },
       ];
+    case "peer_transfer_completed": {
+      const amount = formatINR(event.amount);
+      const out: Draft[] = [];
+      if (event.requestId) {
+        out.push({
+          to: event.recipientId,
+          kind: "money",
+          title: `${amount} request was paid.`,
+          body: `${event.senderHandle} paid your request · ${event.reference}.`,
+        });
+      } else {
+        out.push({
+          to: event.recipientId,
+          kind: "money",
+          title: `You received ${amount}.`,
+          body: `From ${event.senderHandle} · ${event.reference}.`,
+        });
+      }
+      // A guardian-approved transfer is announced to the sender by
+      // approval_approved instead (no double notice).
+      if (!event.approvalId) {
+        out.push({
+          to: event.senderId,
+          kind: "money",
+          title: `${amount} sent to ${event.recipientHandle}.`,
+          body: event.requestId
+            ? `You paid ${event.recipientHandle}'s request · ${event.reference}.`
+            : `Reference ${event.reference}.`,
+        });
+        const controls = activeControls(state, event.senderId);
+        const guardianId = state.family.links.find((l) => l.teenId === event.senderId)?.guardianId;
+        if (controls?.notifications.payments && guardianId) {
+          out.push({
+            to: guardianId,
+            kind: "money",
+            title: `${nameOf(state, event.senderId)} sent money`,
+            body: `${amount} to ${event.recipientHandle}.`,
+          });
+        }
+      }
+      return out;
+    }
+    case "peer_request_created":
+      return [
+        {
+          to: event.requesterId,
+          kind: "money",
+          title: "Money request sent.",
+          body: `You asked ${event.payerHandle} for ${formatINR(event.amount)}${event.note ? ` · ${event.note}` : ""}.`,
+        },
+        {
+          to: event.payerId,
+          kind: "money",
+          title: `${event.requesterHandle} requested ${formatINR(event.amount)}.`,
+          body: event.note ? `${event.note} · Pay or decline in Requests.` : "Pay or decline in Requests.",
+        },
+      ];
+    case "peer_request_declined":
+      return [
+        {
+          to: event.requesterId,
+          kind: "money",
+          title: "Money request declined.",
+          body: `${event.payerHandle} declined your ${formatINR(event.amount)} request. No money moved.`,
+        },
+      ];
+    case "peer_request_cancelled":
+      return [
+        {
+          to: event.payerId,
+          kind: "money",
+          title: "Money request cancelled.",
+          body: `${event.requesterHandle} cancelled their ${formatINR(event.amount)} request. No money moved.`,
+        },
+      ];
     case "allowance_sent":
       return [
         {
@@ -370,6 +445,17 @@ function drafts(state: SandboxState, event: DomainEvent): Draft[] {
     }
     case "approval_approved": {
       const a = event.approval;
+      // A TeenPay transfer: the sender's "sent" notice, with who approved.
+      if (a.kind === "transfer") {
+        return [
+          {
+            to: a.teenId,
+            kind: "approval",
+            title: `${formatINR(a.amount)} sent to ${a.recipientName}.`,
+            body: `${nameOf(state, a.guardianId)} approved it.`,
+          },
+        ];
+      }
       return [
         {
           to: a.teenId,
@@ -385,7 +471,7 @@ function drafts(state: SandboxState, event: DomainEvent): Draft[] {
         {
           to: a.teenId,
           kind: "approval",
-          title: "Payment not approved",
+          title: a.kind === "transfer" ? "Transfer not approved" : "Payment not approved",
           body: `${nameOf(state, a.guardianId)} declined ${formatINR(a.amount)} to ${a.recipientName}. No money moved.`,
         },
       ];

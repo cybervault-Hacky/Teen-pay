@@ -356,6 +356,16 @@ export function decideApprovalTransition(
   if (denied) return fail(state, denied);
 
   const target = input.decision === "approve" ? "approved" : "declined";
+  // A TeenPay transfer's recipient wallet is outside any family scope,
+  // so approving one executes through the peer engine
+  // (`approveTransferTransition`), never here. Declining moves nothing
+  // and stays here.
+  if (approval.kind === "transfer" && target === "approved" && approval.status === "pending") {
+    return fail(state, {
+      code: "invalid_transition",
+      message: "Something went wrong, so nothing was changed. Please try again.",
+    });
+  }
   if (approval.status !== "pending") {
     if (approval.status === target) return ok(state, { status: target });
     return fail(state, {

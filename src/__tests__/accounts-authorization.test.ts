@@ -138,7 +138,7 @@ describe("accounts — creation", () => {
       displayName: "Neha Mehta",
       username: "neha",
     });
-    expect(db.families).toHaveLength(1); // only the seed family
+    expect(db.families).toHaveLength(2); // only the two seed families (Sharma, Kapoor)
     expect(scopeFor(db, account.id)?.info.familyId).toBeNull();
   });
 

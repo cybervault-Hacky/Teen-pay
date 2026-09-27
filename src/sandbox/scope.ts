@@ -6,6 +6,7 @@ import type {
   LedgerEntry,
   MoneyOperation,
   MoneySpace,
+  PeerRequest,
   PocketMoneySchedule,
   SecurityEvent,
   User,
@@ -39,6 +40,13 @@ import type { SandboxDatabase, SandboxState, TeenRecords } from "./types";
  * (balance, payments) but every Space movement in it is redacted to a
  * generic "Money Space" — no Space id, name or goal. The amounts stay,
  * so the teen's available balance is still correct for the guardian.
+ *
+ * TeenPay-to-TeenPay money (Phase 8): a scope holds only the money
+ * requests its viewer is a party to, read-only (the peer engine writes
+ * them). A peer transfer shows in each party's own wallet history, but
+ * its far side is redacted — no other account id on the entry, no
+ * other wallet on the operation — so a scope never learns another
+ * teen's internal ids.
  *
  * Pocket money schedules belong to the paying parent. A scope holds a
  * parent's own schedules only while that parent is actively linked to
@@ -102,18 +110,60 @@ function redactSpaceOperation(op: MoneyOperation): MoneyOperation {
   };
 }
 
+/** The other side of a peer transfer, as a scope sees it: no ids. */
+export const REDACTED_PEER_ID = "teenpay_user";
+
+function redactPeerEntry(entry: LedgerEntry): LedgerEntry {
+  return { ...entry, counterparty: { ...entry.counterparty, id: REDACTED_PEER_ID } };
+}
+
+/**
+ * A peer transfer's legs on wallets outside the scope lose their
+ * wallet and entry ids (the other teen's wallet is not the viewer's
+ * business); the amounts stay, so the record still balances.
+ */
+function redactPeerOperation(op: MoneyOperation, walletIds: ReadonlySet<string>): MoneyOperation {
+  if (op.legs.every((leg) => leg.walletId === undefined || walletIds.has(leg.walletId))) return op;
+  return {
+    ...op,
+    legs: op.legs.map((leg) =>
+      leg.walletId === undefined || walletIds.has(leg.walletId)
+        ? leg
+        : {
+            direction: leg.direction,
+            amount: leg.amount,
+            external: { kind: "account" as const, id: REDACTED_PEER_ID, name: "TeenPay user" },
+          },
+    ),
+  };
+}
+
+function isPeerEntry(entry: LedgerEntry): boolean {
+  return entry.type === "transfer_in" || entry.type === "transfer_out";
+}
+
 /**
  * The financial records of a set of wallets. Space movements of
- * wallets the viewer doesn't own are redacted (see module comment).
+ * wallets the viewer doesn't own are redacted (see module comment),
+ * and so is the far side of every peer transfer: the other account's
+ * id on the viewer's entries, and the other wallet's legs on the
+ * operation. Engine-level views (no viewer) see everything.
  */
 function journalFor(db: SandboxDatabase, walletIds: ReadonlySet<string>, viewerId?: string) {
   const redact = (accountId: string) => viewerId !== undefined && accountId !== viewerId;
+  const scoped = viewerId !== undefined;
   const ownerOf = new Map(db.wallets.map((w) => [w.id, w.ownerAccountId]));
   return {
     wallets: db.wallets.filter((w) => walletIds.has(w.id)),
     ledger: db.ledger
       .filter((e) => walletIds.has(e.walletId))
-      .map((e) => (e.spaceId !== undefined && redact(e.accountId) ? redactSpaceEntry(e) : e)),
+      .map((e) =>
+        e.spaceId !== undefined && redact(e.accountId)
+          ? redactSpaceEntry(e)
+          : scoped && isPeerEntry(e)
+            ? redactPeerEntry(e)
+            : e,
+      ),
     operations: db.operations
       .filter((op) =>
         op.legs.some((leg) => leg.walletId !== undefined && walletIds.has(leg.walletId)),
@@ -122,7 +172,9 @@ function journalFor(db: SandboxDatabase, walletIds: ReadonlySet<string>, viewerI
         op.type === "space" &&
         op.legs.some((l) => l.walletId !== undefined && redact(ownerOf.get(l.walletId) ?? ""))
           ? redactSpaceOperation(op)
-          : op,
+          : scoped && op.type === "transfer"
+            ? redactPeerOperation(op, walletIds)
+            : op,
       ),
     spaces: db.spaces.filter(
       (s) => walletIds.has(s.walletId) && (viewerId === undefined || s.ownerAccountId === viewerId),
@@ -200,11 +252,13 @@ function assemble(
   records: TeenRecords,
   notifications: AppNotification[],
   schedules: PocketMoneySchedule[],
+  peerRequests: PeerRequest[],
   /** Engine-level views see everything unredacted. */
   engineLevel = false,
 ): SandboxState {
   return {
     schedules,
+    peerRequests,
     users,
     session: { currentUserId: viewerId },
     family,
@@ -268,6 +322,11 @@ export function scopeFor(
       records,
       notifications,
       schedulesFor(db, family, viewerId),
+      // Only requests the viewer is a party to — never anyone else's,
+      // not even a linked teen's (the ledger shows a guardian the money).
+      db.peerRequests.filter(
+        (r) => r.requesterAccountId === viewerId || r.payerAccountId === viewerId,
+      ),
     ),
     info: {
       viewerId,
@@ -302,6 +361,7 @@ export function databaseView(
     records,
     db.notifications,
     db.pocketMoneySchedules.filter((s) => s.familyId === family.id),
+    db.peerRequests,
     true,
   );
 }
@@ -662,6 +722,10 @@ export function mergeScope(
   after: SandboxState,
 ): SandboxDatabase {
   if (before === after) return db;
+  // Money requests are written only by the peer engine, never a scope.
+  if (before.peerRequests !== after.peerRequests) {
+    throw new LedgerIntegrityError("Money requests can't be changed from a scoped view.");
+  }
   let next: SandboxDatabase = db;
 
   if (info.familyId && after.family.id === info.familyId) {

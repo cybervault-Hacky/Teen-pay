@@ -56,6 +56,41 @@ export type DomainEvent =
       amount: number;
       recipientName: string;
     })
+  // TeenPay-to-TeenPay (Phase 8). Handles are display snapshots.
+  | (EventBase & {
+      type: "peer_transfer_completed";
+      /** The transfer operation id (its idempotency key). */
+      operationId: string;
+      reference: string;
+      senderId: string;
+      recipientId: string;
+      senderHandle: string;
+      recipientHandle: string;
+      amount: number;
+      /** Set when this transfer paid a money request. */
+      requestId?: string;
+      /** Set when a guardian approval released it. */
+      approvalId?: string;
+    })
+  | (EventBase & {
+      type: "peer_request_created";
+      requestId: string;
+      requesterId: string;
+      payerId: string;
+      requesterHandle: string;
+      payerHandle: string;
+      amount: number;
+      note?: string;
+    })
+  | (EventBase & {
+      type: "peer_request_declined" | "peer_request_cancelled";
+      requestId: string;
+      requesterId: string;
+      payerId: string;
+      requesterHandle: string;
+      payerHandle: string;
+      amount: number;
+    })
   | (EventBase & {
       type: "allowance_sent";
       entryId: string;

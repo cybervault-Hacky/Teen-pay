@@ -66,10 +66,12 @@ describe("identity — role switching", () => {
     expect(target?.id).toBe(SEED_PARENT_ID);
     const scope = scopeFor(db, target!.id);
     expect(currentUser(scope!.state).id).toBe(SEED_PARENT_ID);
-    expect(db.families).toHaveLength(1);
-    // Phase 5: one primary wallet per account (teen + parent).
-    expect(db.wallets).toHaveLength(2);
-    expect(db.accounts).toHaveLength(2);
+    // Phase 8: the seed has a second family (Meera, a peer teen).
+    expect(db.families).toHaveLength(2);
+    // Phase 5: one primary wallet per account (Aarav, Priya, Meera).
+    expect(db.wallets).toHaveLength(3);
+    expect(db.accounts).toHaveLength(3);
+    expect(scopeFor(db, target!.id)!.state.wallets).toHaveLength(1); // Priya sees only her own
   });
 
   it("an unlinked parent has no current family; a linked one does", () => {

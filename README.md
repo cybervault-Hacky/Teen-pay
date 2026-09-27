@@ -2,8 +2,8 @@
 
 A money platform for teenagers and their families — receive pocket money, manage a balance, save toward goals, and pay trusted people. TeenPay is designed for teens first: calm, clear, and safe, without asking a teenager to juggle a traditional bank account.
 
-> **Status: Phase 7 — Pocket Money Autopilot (sandbox).**
-> On top of Phase 6 (account-owned wallets, one append-only double-entry ledger, idempotent referenced operations, ledger-derived Money Spaces): a linked parent can schedule **recurring pocket money** — weekly or monthly, with a start and optional end date — that pays from the parent's wallet to the teen's through the same `postOperation` engine, one atomic `ALW-` operation per transfer day. Execution is explicit (no timers); each occurrence pays **at most once, ever**; low balances or frozen wallets fail an occurrence safely without moving money; pause, resume, cancel and end dates are first-class. Storage schema v6, migrated from every earlier phase.
+> **Status: Phase 8 — Send & Request Money (sandbox).**
+> On top of Phase 7 (account-owned wallets, one append-only double-entry ledger, idempotent referenced operations, ledger-derived Money Spaces, recurring pocket money): teens can **send money to another TeenPay teen** by TeenPay ID (`@meera`) and **request money** from one. Every transfer is one atomic `TRF-` operation through the same `postOperation` engine, spends only **available** money (never Spaces), respects the guardian's limits and approval threshold, and can't run twice. Requests move nothing until the payer pays; they can be declined, cancelled, or expire after 7 days. Storage schema v7, migrated from every earlier phase.
 >
 > **No real authentication provider is active.** "Continue as Teen / Parent" starts a sandbox session on this device — no password, no OTP, no verification.
 >
@@ -47,14 +47,16 @@ cp .env.example .env.local
 
 ```
 src/
-  app/            # Routes: /, /pay, /money, /money/[spaceId], /activity, /family,
-                  # /profile, /parent, /sign-in, /create-account
+  app/            # Routes: /, /pay, /send, /request, /requests, /money,
+                  # /money/[spaceId], /activity, /family, /profile, /parent,
+                  # /sign-in, /create-account
   auth/           # Auth abstraction: types, AuthProvider/useAuth, sandbox service
   components/
     ui/           # Primitives: Button, Card, Input, Modal, AmountDisplay, …
     layout/       # AppShell, SideNav (desktop), TabBar (mobile), headers
     home/         # Home screen sections (balance, quick actions, spaces, …)
     pay/          # Pay flow: recipient picker, amount input, step machine
+    peer/         # TeenPay send/request flow, peer search, Requests center
     activity/     # Ledger-derived feed, request cards, transaction detail
     money/        # Money screen (available, spaces, space activity, actions)
     spaces/       # Space card, detail, create/edit, add/move back, archive
@@ -70,9 +72,10 @@ src/
   domain/         # Domain types: user/account, family, permissions,
                   # security, money (validation), wallet, space,
                   # transaction, recipient, request, ledger,
-                  # safety, approval, events, notification, allowance
+                  # safety, approval, events, notification, allowance, peer
   sandbox/        # The sandbox: engine, operations, rules, transitions,
                   # space-transitions, allowance-transitions,
+                  # peer (directory), peer-transitions,
                   # family-transitions, events,
                   # identity, seed, scope,
                   # authorization, accounts, selectors, persistence,
@@ -92,14 +95,14 @@ UI actions ──▶ store (useSandbox) ──▶ pure transitions ──▶ val
 
 - **`src/sandbox/engine.ts`** — pure, side-effect-free rules: whole-rupee positive amounts (one check in `domain/money.ts`), the ₹10,000 per-move sandbox cap, INR only, type/direction/counterparty consistency, and the per-wallet no-negative-balance rule. Entries are frozen and appended idempotently.
 - **`src/sandbox/operations.ts`** — `postOperation`, the only way to write ledger entries (Phase 5, below).
-- **`src/sandbox/transitions.ts`** — pure state transitions: `pay`, approvals, `createRequest`, `respondRequest` (only "paid" touches the ledger), `sendAllowance`, sandbox refunds, wallet freeze, notifications. Money Space transitions live in `space-transitions.ts` (Phase 6); recurring pocket money in `allowance-transitions.ts` (Phase 7).
+- **`src/sandbox/transitions.ts`** — pure state transitions: `pay`, approvals, `createRequest`, `respondRequest` (only "paid" touches the ledger), `sendAllowance`, sandbox refunds, wallet freeze, notifications. Money Space transitions live in `space-transitions.ts` (Phase 6); recurring pocket money in `allowance-transitions.ts` (Phase 7); TeenPay-to-TeenPay transfers and money requests in `peer-transitions.ts` (Phase 8).
 - **`src/sandbox/store.tsx`** — the single client-side boundary. Components never touch localStorage or the ledger directly; they consume typed state and actions from `useSandbox()`. A future real backend can implement exactly this contract over an API.
 - **Derived, never stored** — the available balance, every Money Space balance, goal progress, activity, the pending-requests list, and notification counts are all computed from ledger entries on render. There is no "current balance" field anywhere.
 - **Money Spaces** — available = what can be spent; Spaces (Save, goals, custom) hold money set aside inside the same wallet; total = available + Spaces. Upcoming = pending requests (expecting money never increases the balance). See Phase 6.
-- **Idempotency** — the Pay flow generates one idempotency key when you reach review; double-confirming replays it and can never create a second payment.
-- **Persistence** — one versioned localStorage key (`teenpay-sandbox-v1`, schema v6 since Phase 7), validated and migrated on load. Unreadable data is backed up, never silently dropped (see Phase 4).
+- **Idempotency** — the Pay, Send and Request flows generate one idempotency key when you reach review; double-confirming replays it and can never create a second payment, transfer or request.
+- **Persistence** — one versioned localStorage key (`teenpay-sandbox-v1`, schema v7 since Phase 8), validated and migrated on load. Unreadable data is backed up, never silently dropped (see Phase 4).
 - **Reset** — **Profile → Reset sandbox data** (with confirmation) restores the initial state: ledger, requests, notifications, and balances. Your theme preference is kept.
-- **Fictional family** — teen Aarav Sharma (`@aarav`), parent Priya Sharma (`@priya`). See Phase 3 below.
+- **Fictional family** — teen Aarav Sharma (`@aarav`), parent Priya Sharma (`@priya`). See Phase 3 below. Since Phase 8 the seed also has Meera Kapoor (`@meera`), a teen in her own, separate family, to send to and request from.
 
 ### Honest sandbox indicators
 
@@ -375,6 +378,75 @@ All earlier tests were kept. The ones built on the old schedule preview now asse
 
 **Limitations.** Sandbox only, one device, no sync. There is no background execution: occurrences run when the parent triggers them. A production system would run `executeDue` from a trusted server scheduler with the same idempotency key. Only weekly and monthly (days 1–28) are supported, with one open schedule per parent and teen and a fixed ₹10,000 per-transfer sandbox cap. There are no split allocations into Spaces and no teen-initiated requests to change pocket money.
 
+## Phase 8 — Send & Request Money
+
+**Status.** Complete (sandbox). Teens can send (fictional) money to another TeenPay teen and ask one for money. **Sandbox only — no real UPI, bank, card, payment gateway, settlement or real money.** A "TeenPay transfer" is two entries in this browser's ledger.
+
+**Architecture.** One domain module, a directory, one transition module — all on the existing engine.
+- `domain/peer.ts` — the `PeerRequest` model and status, `PeerProfile` (the display-safe face of an account: `@handle`, name, initials), the 7-day expiry (`peerRequestExpiresAt`, `effectivePeerRequestStatus`) and labels.
+- `sandbox/peer.ts` — the directory: `parseTeenPayId` (accepts `@meera`, `meera`, `sandbox:meera`; never an internal id), `resolvePeer`, `searchPeers` (from 2 characters, at most 5 results, never yourself) and `lookupPeer`. Eligible = an **active teen account with a non-closed primary wallet**. Anything else reads "No TeenPay user found."; malformed input "Enter a TeenPay ID like @meera."; yourself is `self_transfer`.
+- `sandbox/peer-transitions.ts` — `sendMoney`, `createMoneyRequest`, `acceptMoneyRequest`, `declineMoneyRequest`, `cancelMoneyRequest`, `expireMoneyRequests` and `approveTransfer`. Every money movement goes through one private `executePeerTransfer`, which calls `postOperation` once. There is no second ledger and no second engine.
+- `sandbox/rules.ts` — the guardian decision is shared: `evaluatePayment` (contacts) and `evaluateTransfer` (TeenPay) are one `decideSpend` core, so limits and thresholds can't drift apart.
+- `sandbox/selectors.ts` — `selectSendableBalance`, `selectPeerRequests`, `selectIncomingRequests`, `selectOutgoingRequests`, `selectPendingPeerRequests`, `selectRequestHistory`, `selectPeerRequest`, `selectRequestStatus`, `selectRelatedPayment`, `selectPeerTransfers`, `selectRecipientDisplay`. Request views are memoized per requests array, viewer and minute. Screens never scan raw state.
+- Store (`useSandbox()`): the six actions above return typed `SandboxResult`s; `peers.search` / `peers.lookup` expose only `PeerProfile`s. Transfers cross families, so they can't run inside one family scope: the store's `dispatchDb` runs them at database level as the signed-in account (same guarantees as `dispatch` — signed in, active account, all-or-nothing), and the engine authorizes the actor itself. Approving a transfer approval is routed to `approveTransfer`; the family-scoped approval path refuses to execute one.
+
+**Send model.** A send is one `transfer` operation: `id` = the idempotency key, `reference` `TRF-XXXXXXXX`, `amount` (whole rupees), `currency` INR, `status` completed, `actorId` (who initiated: the sender, or the approving guardian), `createdAt` (= completed at: posting is atomic). Its two legs are the ledger entries: `transfer_out` (debit) on the sender's account + wallet and `transfer_in` (credit) on the recipient's, both with the same reference and the other side's `@handle`.
+
+**Atomic transfer.** `postOperation` validates the amount, currency, both wallets and the sender's **available** balance and appends both legs — or nothing. Money is conserved; there's never a single leg, a negative balance or a partial transaction. Money in Spaces isn't available: with ₹1,850 total and ₹800 in a Space, sending ₹1,200 fails with "Not enough available money. You have ₹1,050 available." and the Space is untouched. Amounts are validated centrally (zero, negative, decimal, malformed, above the ₹10,000 sandbox cap). Self-transfers are refused in the domain.
+
+**Wallet states.** A frozen or closed sender can't send. A closed recipient (or closed account) is "No TeenPay user found.". **Policy for a frozen recipient: refuse** — "@meera can't receive money right now. Nothing was sent." (frozen teens still appear in search, so the reason is clear). Accepting a request re-checks both wallets the same way.
+
+**Idempotency.** The key is created once per action, when review opens (the Requests center's Pay is keyed by the request itself). Same key + same details → the original result (`replayed: true`) and nothing written; same key + different details → `duplicate`. This covers double clicks, retries, refreshes and stale screens. Request payments use the fixed operation id `p2p_<requestId>`, so a request can be paid at most once. Guardian approval ids derive from the same key. Notifications are keyed by event id, so replays never notify twice.
+
+**Request model & lifecycle.** `requestId` (`prq_<key>`), requester and payer account + wallet ids (plus display snapshots: handle, name), `amount`, `currency`, `note?` (≤ 60 characters), `status` pending | accepted | declined | cancelled | expired, `idempotencyKey`, `createdAt`, `updatedAt`, `expiresAt`, `respondedAt?`, `resultingPaymentReference?`. A request **is not a ledger transaction**: it never touches balances, Spaces or daily totals.
+- **Create** (requester) — moves no money; visible to both.
+- **Accept** (payer only) — re-validates the request (pending, not expired), both accounts and wallets, the amount, the available balance and the guardian rules; then one transfer moves the money and the request becomes accepted with the transfer's reference, in the same step. Double accept → exactly one transfer.
+- **Decline** (payer only) — no ledger entry.
+- **Cancel** (requester only, pending only) — no ledger entry.
+- Declining, cancelling or expiring also closes any pending guardian approval for it, so it can never execute later.
+
+**Expiry.** 7 days (`PEER_REQUEST_TTL_DAYS`), computed from timestamps — no timer. A pending request past `expiresAt` reads as expired everywhere and can't be paid, declined or cancelled. `expireMoneyRequests` (run when the Requests center opens) writes it down, with `respondedAt` = the moment it expired. It moves no money and sends no notices.
+
+**Insufficient funds on accept.** Nothing moves and the request **stays pending** ("Not enough available money. You have ₹X available."), so the payer can top up or free money from a Space and try again. Spaces are protected: with ₹500 available and ₹1,000 in Save, a ₹700 request fails.
+
+**Guardian controls.** Pocket money stays a separate feature. For a teen with a linked guardian, sends and request payments go through the same decision as payments: the per-payment limit and daily limit are hard stops, and anything above the approval threshold uses the existing approval flow (`kind: "transfer"`). Nothing moves until the guardian approves; approval re-checks everything and executes through the same atomic path, exactly once. A declined approval moves nothing; a request whose payment was declined stays pending but the teen can't pay it (they can decline it). **Incoming money is not spending** — it never uses up the daily limit. A disconnected guardian can't approve.
+
+**Authorization & privacy.** Decided in the engine, never by the UI.
+- Only active teens send, request and pay; parents can't send or receive TeenPay transfers.
+- Only the payer accepts or declines; only the requester cancels. Everyone else — including parents, unrelated accounts and forged ids — gets "This request isn't available."
+- A signed-out or closed-account stale screen is refused (`not_signed_in` / `account_unavailable`).
+- Each account's view holds only its own wallet, its own leg of each transfer and requests it's a party to. The other side appears as `@handle` + name; its account and wallet ids are redacted from the viewer's ledger and operations, and no family details cross over. The directory never returns ids.
+
+**Notifications.** Recipient "You received ₹250."; sender "₹250 sent to @meera." (for an approved send, the approval notice carries that title); requester "Money request sent."; payer "@aarav requested ₹300."; requester "₹300 request was paid." / "Money request declined."; payer "Money request cancelled.". A linked guardian with payment notifications on hears about sends. None repeat on retry.
+
+**Activity & screens.**
+- **Activity**: "Money sent −₹250" (To @meera), "Money received +₹250" (From @aarav), "Money request paid +₹300" (From @meera · Request). Open requests sit in their own "Money requests" block, apart from ledger rows. The transaction detail shows type, direction, status, `@handle · name`, the related request (who asked, status, note), reference and time — no internal ids.
+- **Send** (`/send`) / **Request** (`/request`): search → amount (with live guidance from `evaluateTransfer`) → review ("Send ₹250 / To @meera / From your available balance") → confirm → "Money sent" with amount, recipient, reference and time — shown only after the engine succeeds.
+- **Requests** (`/requests`): Incoming ("₹300 requested by @aarav" — Decline / Pay, with a confirmation), Sent ("₹500 requested from @meera" — Cancel request) and History.
+- **Home**: Send and Request quick actions (Pay stays for sandbox contacts) and a pointer to open requests. **Money**: available → Send / Request / Requests → Spaces → recent activity.
+
+**Persistence.** Schema **v7** adds `peerRequests`. On load v1 → … → v6 → v7 runs automatically, with the original payload backed up first; nothing is dropped or duplicated. The v7 validator also refuses:
+- a malformed request (fields, parties, wallets, currency, note, or an expiry that isn't created + 7 days);
+- duplicate request ids or keys;
+- a pending request with a reference, or a non-pending one without `respondedAt`;
+- an accepted request without its matching transfer, or a declined, cancelled or expired one that points at money;
+- a request transfer without its request;
+- a transfer whose ledger entries don't match its legs.
+
+Such data is backed up and replaced by the seed. **Reset** is deterministic (the v7 seed has Meera and no requests).
+
+**Tests** (`npm test`): 511 in total (38 files). Phase 8 adds 90:
+- `peer-transfers.test.ts` — directory, atomic send, idempotency, amounts, Spaces, self, teen-only, wallet states, notifications, privacy, Activity;
+- `peer-requests.test.ts` — create, accept, double accept, insufficient funds with Spaces, decline, cancel, authorization, expiry;
+- `peer-guardian.test.ts` — per-payment and daily limits, incoming isn't spending, approval, decline, re-checks, request approvals, disconnect;
+- `peer-persistence.test.ts` — v6 → v7, reload, reset, 21 tamper cases;
+- `peer-ui.test.tsx` — send, request, the center (pay, decline, cancel, expired), Activity, detail, Home, Money, stale signed-out screens;
+- `phase8-journey.test.tsx` — a 34-step journey through the real app.
+
+All earlier tests were kept. Tests that pinned schema v6 or the one-family seed now expect v7 and the second seed family. Home's "Request" quick action now opens `/request` (contact requests remain on `/pay`).
+
+**Limitations.** Sandbox only, one device, no sync, no real people: "another teen" means another sandbox account in this browser. There are no contacts/favourites, no QR codes, no split bills, no recurring transfers and no push notifications. Expiry is written down lazily (when the Requests center opens) rather than by a server job. A production version would run transfers on a trusted server with the same idempotency keys.
+
 ## Design system
 
 All styling flows from the semantic tokens in `src/app/globals.css`:
@@ -407,5 +479,6 @@ Money is rendered exclusively through `AmountDisplay` (tabular numerals, INR for
 - **Phase 4** — auth abstraction + sandbox sessions, sign-in/create-account, accounts & usernames, memberships & expiring invites, central permissions, repository layer, schema v3 migration
 - **Phase 5** — account-owned wallets, append-only double-entry ledger, idempotent operations with references, derived balances and transaction queries, wallet freeze, sandbox refunds, repository-level wallet isolation, schema v4 migration
 - **Phase 6** — Money Spaces: default Save, goals with target/date, custom spaces, ledger-derived Space balances, available vs allocated money, idempotent `SPC-` moves, archive with history, private-by-default Space details, schema v5 migration
-- **Phase 7 (this)** — Pocket Money Autopilot: weekly/monthly schedules from a parent's wallet to a linked teen's, explicit idempotent execution (one `ALW-` operation per transfer day), missed-day and insufficient-funds policies, freeze safety, pause/resume/cancel/end date, parent and teen screens, schema v6 migration
+- **Phase 7** — Pocket Money Autopilot: weekly/monthly schedules from a parent's wallet to a linked teen's, explicit idempotent execution (one `ALW-` operation per transfer day), missed-day and insufficient-funds policies, freeze safety, pause/resume/cancel/end date, parent and teen screens, schema v6 migration
+- **Phase 8 (this)** — Send & Request Money: teen-to-teen transfers by TeenPay ID (one atomic `TRF-` operation, available money only, idempotent), money requests (pending → accepted / declined / cancelled / expired after 7 days), guardian limits and approvals for transfers, privacy-safe directory, Requests center, schema v7 migration
 - **Later (recommendation only)** — a real auth provider behind `AuthService` and a cloud repository behind the repository contract, then real payment rails with a regulated provider

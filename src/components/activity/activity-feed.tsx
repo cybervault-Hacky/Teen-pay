@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { Search } from "lucide-react";
+import { formatINR } from "@/lib/currency";
 import { useState } from "react";
 import type { LedgerEntry, Transaction } from "@/domain";
 import { cn } from "@/lib/cn";
@@ -9,6 +11,7 @@ import { dayKey, formatDayLabel, relativeDayLabel } from "@/lib/format";
 import {
   listWalletEntries,
   selectPendingApprovals,
+  selectPendingPeerRequests,
   selectPendingRequests,
   selectTeen,
   selectTeenWallet,
@@ -60,6 +63,8 @@ export function ActivityFeed() {
 
   const [view, setView] = useState<View>("transactions");
   const pendingRequests = selectPendingRequests(state);
+  // TeenPay money requests: open, so not transactions — listed apart.
+  const peerRequests = selectPendingPeerRequests(state, now);
   const pendingApprovals = selectPendingApprovals(state, {
     teenId: selectTeen(state).id,
   });
@@ -173,6 +178,42 @@ export function ActivityFeed() {
                 <RequestCard key={request.id} request={request} />
               ))}
           </div>
+        </section>
+      )}
+
+      {peerRequests.length > 0 && (
+        <section aria-label="Money requests">
+          <div className="mb-2 flex items-center justify-between px-1">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-ink-faint">
+              Money requests
+            </h3>
+            <Link
+              href="/requests"
+              className="text-xs font-medium text-ink-faint transition-colors duration-150 hover:text-ink"
+            >
+              Open Requests
+            </Link>
+          </div>
+          <Card>
+            <ul className="divide-y divide-line">
+              {peerRequests.map((request) => (
+                <li key={request.requestId} className="flex items-center justify-between gap-3 px-5 py-3.5">
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-ink">
+                      {request.direction === "incoming"
+                        ? `${formatINR(request.amount)} requested by ${request.party.handle}`
+                        : `${formatINR(request.amount)} requested from ${request.party.handle}`}
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-ink-muted">
+                      {request.awaitingApproval ? "Awaiting approval" : "Pending"} · nothing has moved
+                      {request.note ? ` · ${request.note}` : ""}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-xs text-ink-faint">{formatDayLabel(request.createdAt)}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
         </section>
       )}
 
