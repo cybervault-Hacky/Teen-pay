@@ -2,8 +2,8 @@
 
 A money platform for teenagers and their families — receive pocket money, manage a balance, save toward goals, and pay trusted people. TeenPay is designed for teens first: calm, clear, and safe, without asking a teenager to juggle a traditional bank account.
 
-> **Status: Phase 9 — QR Payments, Contacts & Fast Pay (sandbox).**
-> On top of Phase 8 (account-owned wallets, one append-only double-entry ledger, idempotent referenced operations, ledger-derived Money Spaces, recurring pocket money, teen-to-teen transfers and money requests): every teen has a **TeenPay QR** that holds only their public TeenPay ID. **Scan to pay** reads one with the camera (or a clearly labelled sandbox paste box), shows who it belongs to, and hands off to the existing Send or Request flow. You still enter an amount, review and confirm there. Teens can keep **favourites** for one-tap Quick Pay and Quick Request. A QR or favourite never authorizes anything: every payment is re-resolved and re-checked by the same engine, guardian rules and idempotency as before. Storage schema v8, migrated from every earlier phase.
+> **Status: Phase 10 — Money Coach (sandbox).**
+> On top of Phase 9 (account-owned wallets, one append-only double-entry ledger, idempotent referenced operations, ledger-derived Money Spaces, recurring pocket money, teen-to-teen transfers and requests, TeenPay QR and favourites): teens get a **Money Coach** — a read-only view of their own money for this week, this month or the last 30 days. It shows what came in, what went out, what's set aside and how goals are doing, with short factual insights and lessons. **The Coach is informational and read-only:** it never moves money, approves anything, changes limits, executes payments, gives investment advice or calls an external AI — every figure is derived on the device, deterministically, from the teen's own ledger. Storage schema v8 (unchanged).
 >
 > **No real authentication provider is active.** "Continue as Teen / Parent" starts a sandbox session on this device — no password, no OTP, no verification.
 >
@@ -48,7 +48,7 @@ cp .env.example .env.local
 ```
 src/
   app/            # Routes: /, /pay, /send, /request, /requests, /money,
-                  # /money/[spaceId], /qr, /qr/scan, /contacts, /activity,
+                  # /money/[spaceId], /qr, /qr/scan, /contacts, /coach, /activity,
                   # /family, /profile, /parent, /sign-in, /create-account
   auth/           # Auth abstraction: types, AuthProvider/useAuth, sandbox service
   components/
@@ -59,6 +59,7 @@ src/
     peer/         # TeenPay send/request flow, peer search, Requests center
     qr/           # QR code (SVG), My QR screen, camera scanner, scan screen
     contacts/     # Favourites list + favourites screen
+    coach/        # Money Coach screen, Home card, insights, goals, period selector
     activity/     # Ledger-derived feed, request cards, transaction detail
     money/        # Money screen (available, spaces, space activity, actions)
     spaces/       # Space card, detail, create/edit, add/move back, archive
@@ -75,11 +76,13 @@ src/
                   # security, money (validation), wallet, space,
                   # transaction, recipient, request, ledger,
                   # safety, approval, events, notification, allowance, peer,
-                  # qr (payload format + validator), contact
+                  # qr (payload format + validator), contact,
+                  # coach (periods, definitions, insight rules — pure)
   sandbox/        # The sandbox: engine, operations, rules, transitions,
                   # space-transitions, allowance-transitions,
                   # peer (directory), peer-transitions,
                   # qr (QR identity + resolution), contacts (favourites),
+                  # coach (read-only Money Coach analytics),
                   # family-transitions, events,
                   # identity, seed, scope,
                   # authorization, accounts, selectors, persistence,
@@ -556,6 +559,130 @@ All earlier tests were kept. Tests that pinned schema v7 now expect v8 with `con
 - Sandbox only, one device, no sync, and QR codes don't carry amounts.
 - There are no printed or offline codes, and favourites can't be reordered or nicknamed.
 
+## Phase 10 — Money Coach
+
+A calm, read-only place where a teen can see how their money is doing. **The Coach is informational only.** It never moves money, approves or declines anything, changes limits, runs payments, gives investment advice or calls an external AI. It can't: the code has no write path.
+
+**Architecture.** The Coach reads in one direction:
+
+```
+ledger → existing selectors → coach analytics → deterministic insights → UI
+          (sandbox/selectors)  (sandbox/coach.ts)  (domain/coach.ts)   (components/coach)
+```
+
+- `domain/coach.ts` is pure. It holds the periods, definitions, insight rules, lessons and copy. Its inputs are plain facts, and the clock is always passed in.
+- `sandbox/coach.ts` turns the viewer's scoped state into those facts:
+  - Balances come from `selectMoneySummary`, and Space and goal progress from `selectActiveSpaces`. There's no second calculation of either.
+  - "What happened in this window" comes from `listWalletEntries` for the viewer's own wallet.
+  - `coachReportFor(db, account, period, now)` scopes to the account (`scopeFor`) first, then analyses.
+- The store exposes one action, `coachReport(period)`. It goes through the same signed-in gate as every other read (`readDb`), so a signed-out or stale screen gets `not_signed_in`.
+- The UI calls only `useCoachReport(period)`, which wraps that action. It never reads the ledger or selectors itself.
+- Reports are memoized per database snapshot, account, period and day, in a `WeakMap`. Home and `/coach` share one calculation, and nothing is recalculated until money moves or the day changes.
+- Nothing is persisted and no notifications are created. The period choice is local screen state and isn't saved.
+
+**Periods.** All periods use India time (IST, the product timezone) and one date helper (`coachWindows`).
+
+| Period | Covers | Compared with |
+| --- | --- | --- |
+| Week | Monday → today | The same weekdays last week |
+| Month | The 1st → today | The same days last month (capped at that month's last day) |
+| 30 days | Today and the 29 days before | The 30 days before that |
+
+- If the wallet didn't exist for the whole comparison window, the Coach says **"Not enough data yet"** instead of comparing. This is the low-data state.
+
+**Definitions.** Ledger entries only exist for completed money movements.
+
+- **Spent** means completed `payment_sent` + `transfer_out` debits in the period. These are the same types the guardian daily limit counts.
+  - Pending approvals, declined, cancelled or expired requests, and failed payments are never counted. They never reach the ledger.
+  - Money moved into a Space isn't spending.
+  - Incoming money and pocket money aren't spending.
+- **Received** means pocket money (`allowance_credit`), money from people (`transfer_in` and `payment_received`, including paid requests) and sandbox top-ups (`deposit`). Each part is shown separately.
+- **Refunds** are shown on their own. They are never counted as income or as negative spending.
+- **Reversals and adjustments** are sandbox corrections. They count as neither spending nor income.
+- **Available** and **Set aside** are balances right now, the same figures as the Money screen. Set aside is what's in Money Spaces, and it's still the teen's money.
+- **Savings rate** = money moved into Spaces during the period, minus anything moved back, ÷ money received in the same period.
+  - If nothing was received, it reads "Not enough data yet".
+  - A net move out of Spaces is described as such, never as a negative rate.
+- **Spending comparison:** a change within ±10% reads as "similar". If the previous amount was ₹0, the Coach states both amounts without a percentage.
+
+**Insights.**
+- Deterministic rules over the facts, in a fixed internal order:
+  1. a pending approval (as information);
+  2. balance explanation;
+  3. goals (reached first; at most two);
+  4. spending change or total;
+  5. where spending went and how often;
+  6. money set aside;
+  7. pocket money received and next scheduled;
+  8. money from people;
+  9. one lesson.
+- At most 8 insights.
+- Each has a strict category (`spending`, `saving`, `goals`, `pocket_money`, `balance`, `habit`, `education`), a factual title, and an explanation naming the period, the dates and the source.
+- Actions are links only: Money Spaces, a goal, Activity, Family (pocket money info), or a Learn anchor. There are no approve, pay or change buttons.
+- There's no score, grade or "financial health" number. The priority order is internal only.
+- Copy is neutral: no pressure, shame, fear or "you should", and no product or investment recommendations.
+- A copy-guard test checks every generated insight and lesson against a list of banned words and topics (investing, crypto, loans, gambling, judgement, urgency, scores) and against emoji.
+- The six lessons cover:
+  - available vs saved money;
+  - why use a Space;
+  - an emergency fund, explained simply;
+  - how a spending limit works;
+  - why a payment can be pending;
+  - how the Coach counts spending.
+
+**Goals and pocket money.**
+- Goals are Spaces with a target. Progress, remaining amount and target date come from the existing Space progress.
+- The default Save Space links to `/money`, because its id embeds the account id. Other Spaces link to their own page.
+- Pocket money is read-only information: what was received in the period and the next scheduled payment (amount, date, cadence). The Coach has no parent controls.
+
+**Privacy.**
+- Teen-only, own data only. The report is built only for an active teen whose own wallet is in their scope.
+- A parent gets `not_permitted`, even though a guardian's scope can include the linked teen's wallet for the parent overview. There's no parent Coach and no new permission model.
+- Reports contain no internal, wallet or family ids, guardian settings, notifications or tokens. Tests check this.
+- `/coach` is protected (signed out → sign-in) and wrapped in `RoleGate role="teen"`.
+
+**Determinism.** There's no randomness, AI, external API, analytics or network call, and no server-time dependency. The same data on the same IST day gives an identical report. The only clock read happens once, in the store action, and is passed down.
+
+**Screens.**
+- **Home:** a compact Money Coach card showing this month's headline and the closest goal ("New Bike is 60% complete"), with **View insights** linking to `/coach`.
+- **`/coach`:**
+  - Period selector: native radio buttons, keyboard-operable, with a polite live status line.
+  - **Your money at a glance:** Available and Set aside (now), Received and Spent (the period's dates), plus a comparison line and a small zero-based comparison chart with text labels.
+  - **Insights**, then **Saving goals**, then **How these numbers work** (definitions and the read-only statement), then **Learn**.
+  - **Empty state** for a brand-new account: "Your Money Coach is getting to know your money." / "Make a few transactions to see insights here." Also a low-data caption and a safe error fallback that shows no internal details.
+- Semantic headings and labelled regions, metric labels that say what and when, a spoken value on every progress bar, statuses in words (never colour alone), Lucide icons, no emoji, reduced-motion aware.
+
+**Tests** (`npm test`): 715 in total (49 files). Phase 10 adds 57:
+- `coach-domain.test.ts` (21): periods and IST boundaries, month-end capping, savings rate, comparisons, insight order and caps, goal wording, navigation-only actions, and the copy guard;
+- `coach-analytics.test.ts` (19): seed figures (month: ₹4,500 received, ₹350 spent, ₹2,300 set aside, 51%) and the classification of every ledger type. Also covers:
+  - completed, pending → declined, and failed payments;
+  - incoming and outgoing transfers, Space moves and refunds;
+  - privacy: parent, unknown, other teen, new account, no ids;
+  - determinism, memoization, and a database that is never changed;
+- `coach-ui.test.tsx` (9): structure and accessibility, metric labels, definitions, no money controls, empty state, error fallback, chart text alternative, insight and goal parts;
+- `coach-security.test.ts` (7): static audit of every Coach file. It checks for:
+  - no write path, network, AI or analytics calls;
+  - no raw ledger reads from the UI;
+  - no randomness, secrets, debug output or emoji;
+  - a protected teen-only route;
+- `phase10-journey.test.tsx`: a 29-step journey through the real app. Steps:
+  - figures and periods;
+  - a completed payment;
+  - pending, then declined;
+  - money received;
+  - a Space move;
+  - determinism, no network and no console errors;
+  - stale sign-out and signed-out redirect;
+  - parent, other teen and new account.
+
+All earlier tests were kept unchanged.
+
+**Limitations.**
+- Sandbox only and one device. Periods are fixed (week, month, 30 days), with no custom ranges or history charts.
+- "Where money went" is by type (payments vs transfers to friends). Payments carry no merchant categories.
+- The Coach isn't in the tab bar yet. It's reached from the Home card.
+- Insights are rule-based and deliberately simple. There's no personalization beyond the teen's own figures.
+
 ## Design system
 
 All styling flows from the semantic tokens in `src/app/globals.css`:
@@ -590,5 +717,6 @@ Money is rendered exclusively through `AmountDisplay` (tabular numerals, INR for
 - **Phase 6** — Money Spaces: default Save, goals with target/date, custom spaces, ledger-derived Space balances, available vs allocated money, idempotent `SPC-` moves, archive with history, private-by-default Space details, schema v5 migration
 - **Phase 7** — Pocket Money Autopilot: weekly/monthly schedules from a parent's wallet to a linked teen's, explicit idempotent execution (one `ALW-` operation per transfer day), missed-day and insufficient-funds policies, freeze safety, pause/resume/cancel/end date, parent and teen screens, schema v6 migration
 - **Phase 8** — Send & Request Money: teen-to-teen transfers by TeenPay ID (one atomic `TRF-` operation, available money only, idempotent), money requests (pending → accepted / declined / cancelled / expired after 7 days), guardian limits and approvals for transfers, privacy-safe directory, Requests center, schema v7 migration
-- **Phase 9 (this)** — QR Payments, Contacts & Fast Pay: a versioned TeenPay QR holding only the public TeenPay ID, a strict central validator, a camera scanner (BarcodeDetector) with an honest sandbox paste path, scan → confirm → existing Send/Request flow, owner-scoped favourites with Quick Pay / Quick Request, schema v8 migration
+- **Phase 9** — QR Payments, Contacts & Fast Pay: a versioned TeenPay QR holding only the public TeenPay ID, a strict central validator, a camera scanner (BarcodeDetector) with an honest sandbox paste path, scan → confirm → existing Send/Request flow, owner-scoped favourites with Quick Pay / Quick Request, schema v8 migration
+- **Phase 10 (this)** — Money Coach: a read-only, teen-only view of your own money (week / month / 30 days) — available, set aside, received, spent — with deterministic factual insights, goal progress, lessons and documented definitions; no writes, no network, no AI, no score
 - **Later (recommendation only)** — a real auth provider behind `AuthService` and a cloud repository behind the repository contract, then real payment rails with a regulated provider

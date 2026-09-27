@@ -15,6 +15,7 @@ import SendPage from "@/app/send/page";
 import MyQrPage from "@/app/qr/page";
 import ScanPage from "@/app/qr/scan/page";
 import ContactsPage from "@/app/contacts/page";
+import CoachPage from "@/app/coach/page";
 import SignInPage from "@/app/sign-in/page";
 import { AppShell } from "@/components/layout/app-shell";
 import { RoleGate } from "@/components/sandbox/role-gate";
@@ -38,6 +39,7 @@ const PAGES: Record<string, () => React.ReactNode> = {
   "/qr": () => <MyQrPage />,
   "/qr/scan": () => <ScanPage />,
   "/contacts": () => <ContactsPage />,
+  "/coach": () => <CoachPage />,
 };
 
 /**

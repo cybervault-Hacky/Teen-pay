@@ -26,6 +26,7 @@ import { NextPocketMoney } from "./next-pocket-money";
 import { SpendingStrip } from "./spending-strip";
 import { SectionHeader } from "@/components/ui/section-header";
 import { TeenApprovalCard } from "@/components/family/approval-cards";
+import { CoachHomeCard } from "@/components/coach/coach-home-card";
 
 /**
  * The Home screen, driven entirely by derived sandbox state:
@@ -101,6 +102,8 @@ export function HomeContent() {
             })}
           />
         )}
+
+        <CoachHomeCard />
 
         <SpacesSummary spaces={spaces} allocated={allocated} />
 

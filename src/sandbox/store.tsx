@@ -112,7 +112,8 @@ import {
   type ContactView,
 } from "./contacts";
 import { qrIdentityFor, resolveQrRecipient, type QrIdentity } from "./qr";
-import type { PeerProfile } from "@/domain";
+import { coachReportFor } from "./coach";
+import type { CoachPeriod, CoachReport, PeerProfile } from "@/domain";
 import type { SandboxDatabase, SandboxError, SandboxResult, SandboxState } from "./types";
 
 /**
@@ -306,6 +307,15 @@ export interface SandboxActions {
   startQrPayment: (payload: string) => SandboxResult<{ recipient: PeerProfile; href: string }>;
   /** Same, into the existing Request Money flow (`createMoneyRequest`). */
   startQrRequest: (payload: string) => SandboxResult<{ recipient: PeerProfile; href: string }>;
+
+  // ── Money Coach (read-only — see coach.ts) ──
+  /**
+   * The signed-in teen's Money Coach report for a period: summary,
+   * insights, goals and lessons, derived from their own wallet. Reads
+   * only — it can't move money or change anything. Parents get
+   * `not_permitted`; a signed-out (stale) screen gets `not_signed_in`.
+   */
+  coachReport: (period: CoachPeriod) => SandboxResult<CoachReport>;
 
   // ── Approvals ──
   decideApproval: (
@@ -734,6 +744,9 @@ export function SandboxProvider({
       createQrPayload: () => readDb((db, actorId) => qrIdentityFor(db, actorId)),
       startQrPayment: (payload) => startFromQr(payload, "/send"),
       startQrRequest: (payload) => startFromQr(payload, "/request"),
+
+      coachReport: (period) =>
+        readDb((db, actorId) => coachReportFor(db, actorId, period, new Date().toISOString())),
 
       decideApproval: (approvalId, decision) => {
         // Approving a TeenPay transfer executes across families, so it

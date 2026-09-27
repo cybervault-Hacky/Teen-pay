@@ -72,6 +72,8 @@ export const PROTECTED_ROUTES = [
   // Phase 9: QR & favourites ("/qr" covers "/qr/scan").
   "/qr",
   "/contacts",
+  // Phase 10: Money Coach (read-only, teen-only).
+  "/coach",
 ] as const;
 
 export function isAuthRoute(pathname: string): boolean {
