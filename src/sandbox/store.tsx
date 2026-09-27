@@ -102,6 +102,16 @@ import {
   type SendMoneyOutcome,
 } from "./peer-transitions";
 import { lookupPeer, searchPeers } from "./peer";
+import {
+  addContactTransition,
+  isFavourite,
+  lookupContact,
+  removeContactTransition,
+  selectContactViews,
+  type AddContactOutcome,
+  type ContactView,
+} from "./contacts";
+import { qrIdentityFor, resolveQrRecipient, type QrIdentity } from "./qr";
 import type { PeerProfile } from "@/domain";
 import type { SandboxDatabase, SandboxError, SandboxResult, SandboxState } from "./types";
 
@@ -279,6 +289,24 @@ export interface SandboxActions {
    */
   expireMoneyRequests: () => SandboxResult<{ expired: number }>;
 
+  // ── QR & favourites (discovery only — see qr.ts, contacts.ts) ──
+  /** Saves an eligible TeenPay teen to the viewer's favourites. */
+  addContact: (teenPayId: string, idempotencyKey?: string) => SandboxResult<AddContactOutcome>;
+  /** Removes one of the viewer's favourites. Touches nothing else. */
+  removeContact: (teenPayId: string) => SandboxResult<{ removed: string }>;
+  /** Scanned or pasted text → a safe recipient profile (untrusted input). */
+  resolveQrIdentity: (payload: string) => SandboxResult<PeerProfile>;
+  /** The viewer's own QR: `teenpay://user/@handle?v=1` and their public profile. */
+  createQrPayload: () => SandboxResult<QrIdentity>;
+  /**
+   * Resolves a QR and returns where the existing Send Money flow opens
+   * with that recipient preselected. Moves nothing: the person still
+   * enters an amount, reviews and confirms through `sendMoney`.
+   */
+  startQrPayment: (payload: string) => SandboxResult<{ recipient: PeerProfile; href: string }>;
+  /** Same, into the existing Request Money flow (`createMoneyRequest`). */
+  startQrRequest: (payload: string) => SandboxResult<{ recipient: PeerProfile; href: string }>;
+
   // ── Approvals ──
   decideApproval: (
     approvalId: string,
@@ -329,6 +357,18 @@ export interface SandboxContextValue {
    */
   peers: {
     search: (query: string) => PeerProfile[];
+    lookup: (teenPayId: string) => PeerProfile | null;
+  };
+  /** The viewer's own TeenPay QR (null for parents / ineligible accounts). */
+  qr: QrIdentity | null;
+  /**
+   * The viewer's favourites, resolved against current state (public
+   * profiles only; `available: false` for people who can't take part).
+   */
+  contacts: {
+    list: ContactView[];
+    isFavourite: (teenPayId: string) => boolean;
+    /** A favourite's current profile, only while in the list and eligible. */
     lookup: (teenPayId: string) => PeerProfile | null;
   };
 }
@@ -494,6 +534,34 @@ export function SandboxProvider({
       return output.result;
     }
 
+    /**
+     * Read-only, as the acting account: same "signed in, active" gate
+     * as writes, so a stale screen can't read through a dead session.
+     */
+    function readDb<T>(read: (current: SandboxDatabase, actorId: string) => SandboxResult<T>): SandboxResult<T> {
+      const actor = viewerRef.current;
+      if (!actor) return { ok: false, error: NOT_SIGNED_IN };
+      if (!scopeFor(dbRef.current, actor)) return { ok: false, error: ACCOUNT_UNAVAILABLE };
+      try {
+        return read(dbRef.current, actor);
+      } catch {
+        return { ok: false, error: SOMETHING_WENT_WRONG };
+      }
+    }
+
+    /** QR → recipient → the existing flow's URL (preselected, not sent). */
+    function startFromQr(payload: string, path: "/send" | "/request") {
+      return readDb((db, actorId) => {
+        const resolved = resolveQrRecipient(db, actorId, payload);
+        if (!resolved.ok) return resolved;
+        const handle = resolved.value.handle.replace(/^@/, "");
+        return {
+          ok: true as const,
+          value: { recipient: resolved.value, href: `${path}?to=${encodeURIComponent(handle)}&via=qr` },
+        };
+      });
+    }
+
     function update(fn: (current: SandboxState) => SandboxState): void {
       dispatch((s) => {
         const next = fn(s);
@@ -656,6 +724,17 @@ export function SandboxProvider({
       expireMoneyRequests: () =>
         dispatchDb((db, actorId, at) => expireMoneyRequestsTransition(db, { actorId, at })),
 
+      addContact: (teenPayId, idempotencyKey) => {
+        const contactId = idempotencyKey ?? makeId("ctc");
+        return dispatchDb((db, actorId, at) => addContactTransition(db, { actorId, at, teenPayId, contactId }));
+      },
+      removeContact: (teenPayId) =>
+        dispatchDb((db, actorId, at) => removeContactTransition(db, { actorId, at, teenPayId })),
+      resolveQrIdentity: (payload) => readDb((db, actorId) => resolveQrRecipient(db, actorId, payload)),
+      createQrPayload: () => readDb((db, actorId) => qrIdentityFor(db, actorId)),
+      startQrPayment: (payload) => startFromQr(payload, "/send"),
+      startQrRequest: (payload) => startFromQr(payload, "/request"),
+
       decideApproval: (approvalId, decision) => {
         // Approving a TeenPay transfer executes across families, so it
         // runs in the peer engine (which re-checks everything). Declines
@@ -745,6 +824,15 @@ export function SandboxProvider({
       peers: {
         search: (query) => searchPeers(db, viewerId, query),
         lookup: (teenPayId) => lookupPeer(db, viewerId, teenPayId),
+      },
+      qr: (() => {
+        const identity = qrIdentityFor(db, viewerId);
+        return identity.ok ? identity.value : null;
+      })(),
+      contacts: {
+        list: selectContactViews(db, viewerId),
+        isFavourite: (teenPayId) => isFavourite(db, viewerId, teenPayId),
+        lookup: (teenPayId) => lookupContact(db, viewerId, teenPayId),
       },
     };
   }, [scope, viewerId, storageStatus, actions, db]);

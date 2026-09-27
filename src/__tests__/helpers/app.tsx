@@ -12,6 +12,9 @@ import ProfilePage from "@/app/profile/page";
 import RequestPage from "@/app/request/page";
 import RequestsPage from "@/app/requests/page";
 import SendPage from "@/app/send/page";
+import MyQrPage from "@/app/qr/page";
+import ScanPage from "@/app/qr/scan/page";
+import ContactsPage from "@/app/contacts/page";
 import SignInPage from "@/app/sign-in/page";
 import { AppShell } from "@/components/layout/app-shell";
 import { RoleGate } from "@/components/sandbox/role-gate";
@@ -32,6 +35,9 @@ const PAGES: Record<string, () => React.ReactNode> = {
   "/send": () => <SendPage />,
   "/request": () => <RequestPage />,
   "/requests": () => <RequestsPage />,
+  "/qr": () => <MyQrPage />,
+  "/qr/scan": () => <ScanPage />,
+  "/contacts": () => <ContactsPage />,
 };
 
 /**

@@ -5,8 +5,10 @@ import {
   AtSign,
   Gauge,
   Info,
+  QrCode,
   RotateCcw,
   Shield,
+  Star,
   Users,
 } from "lucide-react";
 import { useState } from "react";
@@ -41,12 +43,12 @@ const linkCopy = {
 } as const;
 
 /**
- * Profile: Account, Family, Money controls, Security, Appearance,
- * Sandbox. The sandbox section is the one place for demo controls —
+ * Profile: Account, TeenPay ID (teens: My QR, favourites), Family,
+ * Money controls, Security, Appearance, Sandbox. The sandbox section is the one place for demo controls —
  * switching role and resetting — and says so plainly.
  */
 export function ProfileContent() {
-  const { state, storageStatus, actions } = useSandbox();
+  const { state, storageStatus, actions, qr, contacts } = useSandbox();
   const data = useSandboxData();
   const [resetOpen, setResetOpen] = useState(false);
   const [resetDone, setResetDone] = useState(false);
@@ -128,6 +130,30 @@ export function ProfileContent() {
           </p>
         </Card>
       </section>
+
+      {isTeen && qr && (
+        <section aria-label="TeenPay ID">
+          <SectionHeader title="TeenPay ID" />
+          <Card className="divide-y divide-line p-2">
+            <ListRow
+              icon={QrCode}
+              title="My TeenPay QR"
+              subtitle={`Let others scan to pay or request from ${qr.profile.handle}`}
+              href="/qr"
+            />
+            <ListRow
+              icon={Star}
+              title="Favourites"
+              subtitle={
+                contacts.list.length === 0
+                  ? "Save people you pay often"
+                  : `${contacts.list.length} saved`
+              }
+              href="/contacts"
+            />
+          </Card>
+        </section>
+      )}
 
       <section aria-label="Family">
         <SectionHeader title="Family" />

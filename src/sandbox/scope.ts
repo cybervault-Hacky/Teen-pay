@@ -7,6 +7,7 @@ import type {
   MoneyOperation,
   MoneySpace,
   PeerRequest,
+  Contact,
   PocketMoneySchedule,
   SecurityEvent,
   User,
@@ -253,12 +254,14 @@ function assemble(
   notifications: AppNotification[],
   schedules: PocketMoneySchedule[],
   peerRequests: PeerRequest[],
+  contacts: Contact[],
   /** Engine-level views see everything unredacted. */
   engineLevel = false,
 ): SandboxState {
   return {
     schedules,
     peerRequests,
+    contacts,
     users,
     session: { currentUserId: viewerId },
     family,
@@ -327,6 +330,8 @@ export function scopeFor(
       db.peerRequests.filter(
         (r) => r.requesterAccountId === viewerId || r.payerAccountId === viewerId,
       ),
+      // Favourites are the owner's alone.
+      db.contacts.filter((c) => c.ownerAccountId === viewerId),
     ),
     info: {
       viewerId,
@@ -362,6 +367,7 @@ export function databaseView(
     db.notifications,
     db.pocketMoneySchedules.filter((s) => s.familyId === family.id),
     db.peerRequests,
+    db.contacts,
     true,
   );
 }
@@ -725,6 +731,10 @@ export function mergeScope(
   // Money requests are written only by the peer engine, never a scope.
   if (before.peerRequests !== after.peerRequests) {
     throw new LedgerIntegrityError("Money requests can't be changed from a scoped view.");
+  }
+  // Favourites likewise: only the contact engine writes them.
+  if (before.contacts !== after.contacts) {
+    throw new LedgerIntegrityError("Favourites can't be changed from a scoped view.");
   }
   let next: SandboxDatabase = db;
 

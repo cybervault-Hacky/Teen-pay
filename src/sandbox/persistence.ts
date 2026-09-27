@@ -1,5 +1,6 @@
 import {
   checkMoney,
+  CONTACT_LIMIT,
   defaultSaveSpaceId,
   PEER_NOTE_MAX,
   peerRequestExpiresAt,
@@ -47,11 +48,12 @@ import {
  * Validation and migration for persisted sandbox data.
  *
  *   v1 (Phase 2) ──migrateV1──▶ v3 ─┐
- *   v2 (Phase 3) ──migrateV2──▶ v3 ─┼─migrateV3──▶ v4 ─migrateV4──▶ v5 ─migrateV5──▶ v6 ─migrateV6──▶ v7 (current)
- *   v3 (Phase 4) ───────────────────┘              ▲                 ▲                ▲
- *   v4 (Phase 5) ──────────────────────────────────┘                 │                │
- *   v5 (Phase 6) ────────────────────────────────────────────────────┘                │
- *   v6 (Phase 7) ─────────────────────────────────────────────────────────────────────┘
+ *   v2 (Phase 3) ──migrateV2──▶ v3 ─┼─migrateV3──▶ v4 ─migrateV4──▶ v5 ─migrateV5──▶ v6 ─migrateV6──▶ v7 ─migrateV7──▶ v8 (current)
+ *   v3 (Phase 4) ───────────────────┘              ▲                 ▲                ▲                ▲
+ *   v4 (Phase 5) ──────────────────────────────────┘                 │                │                │
+ *   v5 (Phase 6) ────────────────────────────────────────────────────┘                │                │
+ *   v6 (Phase 7) ─────────────────────────────────────────────────────────────────────┘                │
+ *   v7 (Phase 8) ──────────────────────────────────────────────────────────────────────────────────────┘
  *
  * Every step keeps the money history: no entry is dropped or changed
  * in amount, direction or date. Anything that fails validation takes
@@ -149,13 +151,18 @@ export interface V4Database {
   recipients: Recipient[];
 }
 
+/** Schema v7 (Phase 8): v8 without favourites. */
+export interface V7Database extends Omit<SandboxDatabase, "version" | "contacts"> {
+  version: 7;
+}
+
 /** Schema v6 (Phase 7): v7 without TeenPay money requests. */
-export interface V6Database extends Omit<SandboxDatabase, "version" | "peerRequests"> {
+export interface V6Database extends Omit<SandboxDatabase, "version" | "peerRequests" | "contacts"> {
   version: 6;
 }
 
 /** Schema v5 (Phase 6): v6 without pocket money schedules. */
-export interface V5Database extends Omit<SandboxDatabase, "version" | "pocketMoneySchedules" | "peerRequests"> {
+export interface V5Database extends Omit<SandboxDatabase, "version" | "pocketMoneySchedules" | "peerRequests" | "contacts"> {
   version: 5;
 }
 
@@ -638,7 +645,7 @@ function isPeerRequestRecord(
 }
 
 /**
- * Schema v7 — the only shape that is saved. Everything v6 checks (see
+ * Checks shared by v7 and v8. Everything v6 checks (see
  * `scheduleIntegrity`), plus TeenPay money: every money request valid
  * (see `isPeerRequestRecord`) with unique ids and idempotency keys;
  * every `transfer` operation exactly one debit and one credit leg on
@@ -647,8 +654,7 @@ function isPeerRequestRecord(
  * belonging to that request's accepted payment. Tampering is rejected,
  * not loaded.
  */
-export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
-  if (!isRecord(value) || value.version !== SANDBOX_SCHEMA_VERSION) return false;
+function peerIntegrity(value: UnknownRecord): boolean {
   const owners = scheduleIntegrity(value);
   if (!owners) return false;
   if (!Array.isArray(value.peerRequests)) return false;
@@ -702,6 +708,62 @@ export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
   for (const e of value.ledger as UnknownRecord[]) {
     if (e.requestId === undefined || !PEER_ENTRY_TYPES.has(String(e.type))) continue;
     if (paidBy.get(e.requestId)?.id !== e.operationId) return false;
+  }
+  return true;
+}
+
+/** Schema v7 (Phase 8) — before favourites. */
+export function isV7Database(value: unknown): value is UnknownRecord {
+  if (!isRecord(value) || value.version !== 7) return false;
+  return peerIntegrity(value);
+}
+
+const CONTACT_KEYS = new Set(["contactId", "ownerAccountId", "teenPayId", "createdAt", "updatedAt"]);
+const CONTACT_ID_PATTERN = /^ctc_[A-Za-z0-9_-]{6,100}$/;
+
+/**
+ * One stored favourite: exactly the five safe fields (a smuggled
+ * wallet or account id, name or balance is rejected), owned by a real
+ * teen account, naming another real teen's TeenPay ID (IDs are never
+ * reused, so this can only be who the owner saved), with coherent
+ * timestamps. A saved person may since have closed their account —
+ * that's a stale favourite, which is fine: it's resolved on every use.
+ */
+function isContactRecord(value: unknown, accounts: Map<unknown, UnknownRecord>, byUsername: Map<unknown, UnknownRecord>): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== CONTACT_KEYS.size || keys.some((k) => !CONTACT_KEYS.has(k))) return false;
+  if (typeof value.contactId !== "string" || !CONTACT_ID_PATTERN.test(value.contactId)) return false;
+  const owner = accounts.get(value.ownerAccountId);
+  if (!owner || owner.role !== "teen") return false;
+  const target = byUsername.get(value.teenPayId);
+  if (!target || target.role !== "teen" || target.id === owner.id) return false;
+  if (!isIsoInstant(value.createdAt) || !isIsoInstant(value.updatedAt)) return false;
+  if (Date.parse(value.updatedAt) < Date.parse(value.createdAt)) return false;
+  return true;
+}
+
+/**
+ * Schema v8 — the only shape that is saved. Everything v7 checks (see
+ * `peerIntegrity`), plus favourites: every contact valid (see
+ * `isContactRecord`), ids unique, no one saved twice by the same
+ * owner, at most CONTACT_LIMIT per owner.
+ */
+export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
+  if (!isRecord(value) || value.version !== SANDBOX_SCHEMA_VERSION) return false;
+  if (!peerIntegrity(value)) return false;
+  if (!Array.isArray(value.contacts)) return false;
+  const accounts = new Map((value.accounts as UnknownRecord[]).map((a) => [a.id, a]));
+  const byUsername = new Map((value.accounts as UnknownRecord[]).map((a) => [a.username, a]));
+  if (!isArrayOf(value.contacts, (c) => isContactRecord(c, accounts, byUsername))) return false;
+  const contacts = value.contacts as UnknownRecord[];
+  if (new Set(contacts.map((c) => c.contactId)).size !== contacts.length) return false;
+  if (new Set(contacts.map((c) => `${String(c.ownerAccountId)}|${String(c.teenPayId)}`)).size !== contacts.length) return false;
+  const perOwner = new Map<unknown, number>();
+  for (const c of contacts) {
+    const count = (perOwner.get(c.ownerAccountId) ?? 0) + 1;
+    if (count > CONTACT_LIMIT) return false;
+    perOwner.set(c.ownerAccountId, count);
   }
   return true;
 }
@@ -843,6 +905,7 @@ export function databaseFromState(state: SandboxState): SandboxDatabase {
     pocketMoneySchedules: state.schedules,
     teenRecords: [{ teenId, requests: state.requests, approvals: state.approvals }],
     peerRequests: state.peerRequests ?? [],
+    contacts: state.contacts ?? [],
     notifications: state.notifications,
     familyLogs: [{ familyId: state.family.id, events: state.familyEvents }],
     securityEvents: [],
@@ -1380,21 +1443,34 @@ export function migrateV5(v5: V5Database, now: string): V6Database {
  * approvals, notifications) is carried over untouched; the original is
  * kept in the repository backup.
  */
-export function migrateV6(v6: V6Database): SandboxDatabase {
+export function migrateV6(v6: V6Database): V7Database {
   // v6 never had money requests: anything stored under that name is
   // foreign and is not carried over (the backup keeps the original).
   const { peerRequests: _foreign, ...rest } = v6 as V6Database & { peerRequests?: unknown };
   void _foreign;
-  return { ...rest, version: SANDBOX_SCHEMA_VERSION, peerRequests: [] };
+  return { ...rest, version: 7, peerRequests: [] };
+}
+
+/**
+ * v7 → v8: QR & favourites. Adds an empty `contacts` list — v7 had no
+ * favourites (a QR identity is derived from the TeenPay ID and needs
+ * no stored state). Everything else is carried over untouched; the
+ * original is kept in the repository backup.
+ */
+export function migrateV7(v7: V7Database): SandboxDatabase {
+  // Anything v7 data stored under that name is foreign: dropped.
+  const { contacts: _foreign, ...rest } = v7 as V7Database & { contacts?: unknown };
+  void _foreign;
+  return { ...rest, version: SANDBOX_SCHEMA_VERSION, contacts: [] };
 }
 
 export type MigrationResult =
   | { kind: "current"; db: SandboxDatabase }
-  | { kind: "migrated"; from: 1 | 2 | 3 | 4 | 5 | 6; db: SandboxDatabase }
+  | { kind: "migrated"; from: 1 | 2 | 3 | 4 | 5 | 6 | 7; db: SandboxDatabase }
   | { kind: "unreadable" };
 
 /**
- * Turns any stored payload into a current (v7) database, or says it
+ * Turns any stored payload into a current (v8) database, or says it
  * can't. Every intermediate result is re-validated before the next
  * step, and the final one before it's trusted.
  */
@@ -1404,43 +1480,51 @@ export function migrateToCurrent(
 ): MigrationResult {
   if (isSandboxDatabase(parsed)) return { kind: "current", db: parsed };
   try {
-    let v6: V6Database | null = null;
-    let from: 1 | 2 | 3 | 4 | 5 | 6 = 6;
-    if (isV6Database(parsed)) {
-      v6 = parsed as unknown as V6Database;
+    let v7: V7Database | null = null;
+    let from: 1 | 2 | 3 | 4 | 5 | 6 | 7 = 7;
+    if (isV7Database(parsed)) {
+      v7 = parsed as unknown as V7Database;
     } else {
-      let v5: V5Database | null = null;
-      from = 5;
-      if (isV5Database(parsed)) {
-        v5 = parsed as unknown as V5Database;
+      let v6: V6Database | null = null;
+      from = 6;
+      if (isV6Database(parsed)) {
+        v6 = parsed as unknown as V6Database;
       } else {
-        let v4: V4Database | null = null;
-        from = 4;
-        if (isV4Database(parsed)) {
-          v4 = parsed as unknown as V4Database;
+        let v5: V5Database | null = null;
+        from = 5;
+        if (isV5Database(parsed)) {
+          v5 = parsed as unknown as V5Database;
         } else {
-          let v3: V3Database | null = null;
-          from = 3;
-          if (isV3Database(parsed)) {
-            v3 = parsed as unknown as V3Database;
-          } else if (isV2State(parsed)) {
-            v3 = migrateV2(parsed, options.now);
-            from = 2;
-          } else if (isV1State(parsed)) {
-            v3 = migrateV1(parsed, options.seedView);
-            from = 1;
+          let v4: V4Database | null = null;
+          from = 4;
+          if (isV4Database(parsed)) {
+            v4 = parsed as unknown as V4Database;
+          } else {
+            let v3: V3Database | null = null;
+            from = 3;
+            if (isV3Database(parsed)) {
+              v3 = parsed as unknown as V3Database;
+            } else if (isV2State(parsed)) {
+              v3 = migrateV2(parsed, options.now);
+              from = 2;
+            } else if (isV1State(parsed)) {
+              v3 = migrateV1(parsed, options.seedView);
+              from = 1;
+            }
+            if (!v3 || !isV3Database(v3)) return { kind: "unreadable" };
+            v4 = migrateV3(v3);
+            if (!isV4Database(v4)) return { kind: "unreadable" };
           }
-          if (!v3 || !isV3Database(v3)) return { kind: "unreadable" };
-          v4 = migrateV3(v3);
-          if (!isV4Database(v4)) return { kind: "unreadable" };
+          v5 = migrateV4(v4, options.now);
+          if (!isV5Database(v5)) return { kind: "unreadable" };
         }
-        v5 = migrateV4(v4, options.now);
-        if (!isV5Database(v5)) return { kind: "unreadable" };
+        v6 = migrateV5(v5, options.now);
+        if (!isV6Database(v6)) return { kind: "unreadable" };
       }
-      v6 = migrateV5(v5, options.now);
-      if (!isV6Database(v6)) return { kind: "unreadable" };
+      v7 = migrateV6(v6);
+      if (!isV7Database(v7)) return { kind: "unreadable" };
     }
-    const db = migrateV6(v6);
+    const db = migrateV7(v7);
     return isSandboxDatabase(db) ? { kind: "migrated", from, db } : { kind: "unreadable" };
   } catch {
     return { kind: "unreadable" };

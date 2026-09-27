@@ -1,6 +1,7 @@
 import {
   checkUsername,
   formatUsername,
+  looksLikeInternalId,
   initialsFor,
   normalizeUsername,
   type PeerProfile,
@@ -78,6 +79,8 @@ export function parseTeenPayId(raw: unknown): string | null {
   const candidate = trimmed.toLowerCase().startsWith("sandbox:")
     ? trimmed.slice("sandbox:".length)
     : trimmed;
+  // Internal ids (usr_…, wal_…) are never a way to find someone.
+  if (looksLikeInternalId(candidate)) return null;
   const check = checkUsername(candidate);
   // "reserved" names are well-formed; they simply belong to nobody.
   return check.problem === null || check.problem === "reserved"

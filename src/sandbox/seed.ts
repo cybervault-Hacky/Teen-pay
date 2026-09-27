@@ -383,6 +383,7 @@ export function buildSeedDatabase(): SandboxDatabase {
       { teenId: SEED_PEER_ID, requests: [], approvals: [] },
     ],
     peerRequests: [],
+    contacts: [],
     notifications: seedNotifications.map((notification) => ({ ...notification })),
     familyLogs: [
       { familyId: SEED_FAMILY_ID, events: [] },

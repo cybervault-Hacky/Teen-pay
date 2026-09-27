@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowDownLeft, ChevronDown, History, Inbox, PiggyBank, Send, Target } from "lucide-react";
+import { ArrowDownLeft, ChevronDown, History, Inbox, PiggyBank, QrCode, ScanLine, Send, Star, Target } from "lucide-react";
 import { formatDayLabel } from "@/lib/format";
 import { entryIcon } from "@/lib/transaction-icons";
 import {
@@ -28,19 +28,22 @@ import { SpaceCard } from "@/components/spaces/space-card";
 import { SpaceFormSheet } from "@/components/spaces/space-form-sheet";
 import { SpaceMoveSheet, type MoveDirection } from "@/components/spaces/space-move-sheet";
 import { SpacesInfoButton } from "./spaces-info";
+import { FavouritesList } from "@/components/contacts/favourites-list";
 
 /**
  * The Money screen, in order of what matters:
  *   1. available money (the wallet) and how the total splits
- *   2. send / request money to other TeenPay teens (from available)
- *   3. Money Spaces (Save, goals, custom)
- *   4. recent Space activity
- *   5. actions (create a goal or a space)
+ *   2. send / request money to other TeenPay teens (from available),
+ *      then the fast ways in: Scan & Pay, My QR
+ *   3. favourites (a few, one tap to pay or request)
+ *   4. Money Spaces (Save, goals, custom)
+ *   5. recent Space activity
+ *   6. actions (create a goal or a space)
  * Every figure is derived from the ledger through selectors; every
  * move goes through the store into the one ledger write path.
  */
 export function MoneyContent() {
-  const { state } = useSandbox();
+  const { state, contacts } = useSandbox();
   // Only the id is kept, so the sheet always sees the live Space.
   const [move, setMove] = useState<{ spaceId: string; direction: MoveDirection } | null>(null);
   const [creating, setCreating] = useState<"goal" | "custom" | null>(null);
@@ -120,10 +123,34 @@ export function MoneyContent() {
               Request
             </Button>
           </div>
+          <div className="mt-2.5 grid grid-cols-2 gap-2.5">
+            <Button variant="secondary" size="sm" href="/qr/scan">
+              <ScanLine className="h-4 w-4" aria-hidden />
+              Scan &amp; Pay
+            </Button>
+            <Button variant="secondary" size="sm" href="/qr">
+              <QrCode className="h-4 w-4" aria-hidden />
+              My QR
+            </Button>
+          </div>
           <Button variant="ghost" size="sm" href="/requests" className="mt-2 w-full">
             <Inbox className="h-4 w-4" aria-hidden />
             {openRequests > 0 ? `Requests · ${openRequests} open` : "Requests"}
           </Button>
+        </section>
+
+        <section aria-label="Favourites">
+          <SectionHeader title="Favourites" href="/contacts" linkLabel={contacts.list.length > 0 ? "Manage" : "Add"} />
+          {contacts.list.length > 0 ? (
+            <Card>
+              <FavouritesList contacts={contacts.list.slice(0, 3)} />
+            </Card>
+          ) : (
+            <p className="flex items-center gap-2 px-1 text-sm text-ink-muted">
+              <Star className="h-4 w-4 shrink-0 text-ink-faint" aria-hidden />
+              Save people you pay often for one-tap Pay and Request.
+            </p>
+          )}
         </section>
 
         <section aria-label="Money Spaces">

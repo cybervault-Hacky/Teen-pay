@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Hourglass, ShieldCheck } from "lucide-react";
+import { Check, Hourglass, QrCode, ShieldCheck, Star, UserRound } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { PEER_NOTE_MAX, PEER_REQUEST_TTL_DAYS, type PeerProfile } from "@/domain";
@@ -25,6 +25,8 @@ import { AmountInput } from "@/components/pay/amount-input";
 import { PeerSearch } from "./peer-search";
 
 export type PeerMode = "send" | "request";
+/** Where a preselected recipient came from — display only, never authority. */
+export type PeerOrigin = "qr" | "favourite";
 type Step = "recipient" | "amount" | "review" | "done";
 
 /** What the engine confirmed — the success screen shows only this. */
@@ -43,12 +45,32 @@ type Receipt =
  *   so the screen never re-implements a rule; the engine checks again
  *   on confirm.
  * - Success is shown only from the engine's result.
+ * - Phase 9: a QR scan or a favourite can preselect the recipient
+ *   (`initialRecipient`, a TeenPay ID). It's resolved through the live
+ *   directory on every render — never trusted as-is — and the person
+ *   still enters the amount, reviews and confirms. If the preselected
+ *   person isn't available (closed, gone, stale favourite), the flow
+ *   says so and falls back to search; nothing can be sent to them.
  */
-export function PeerFlow({ mode }: { mode: PeerMode }) {
-  const { state, actions, viewer } = useSandbox();
+export function PeerFlow({
+  mode,
+  initialRecipient = null,
+  origin = null,
+}: {
+  mode: PeerMode;
+  initialRecipient?: string | null;
+  origin?: PeerOrigin | null;
+}) {
+  const { state, actions, viewer, peers } = useSandbox();
 
-  const [step, setStep] = useState<Step>("recipient");
-  const [party, setParty] = useState<PeerProfile | null>(null);
+  const [step, setStep] = useState<Step>(initialRecipient ? "amount" : "recipient");
+  const [picked, setPicked] = useState<PeerProfile | null>(null);
+  // The preselection applies until the person picks someone else.
+  const [presetActive, setPresetActive] = useState(Boolean(initialRecipient));
+  const presetProfile = presetActive && initialRecipient ? peers.lookup(initialRecipient) : null;
+  const party = picked ?? presetProfile;
+  const presetUnavailable = presetActive && !picked && !presetProfile && step !== "done";
+  const shownStep: Step = presetUnavailable ? "recipient" : step;
   const [digits, setDigits] = useState("");
   const [note, setNote] = useState("");
   const [key, setKey] = useState<string | null>(null);
@@ -119,9 +141,22 @@ export function PeerFlow({ mode }: { mode: PeerMode }) {
     setStep("done");
   };
 
-  const restart = () => {
+  const choose = (profile: PeerProfile) => {
+    setPresetActive(false);
+    setPicked(profile);
+    setStep("amount");
+  };
+
+  const backToRecipient = () => {
+    setPresetActive(false);
+    setPicked(null);
     setStep("recipient");
-    setParty(null);
+  };
+
+  const restart = () => {
+    setPresetActive(false);
+    setStep("recipient");
+    setPicked(null);
     setDigits("");
     setNote("");
     setKey(null);
@@ -130,7 +165,7 @@ export function PeerFlow({ mode }: { mode: PeerMode }) {
 
   return (
     <div>
-      {paused && wallet && step !== "done" && (
+      {paused && wallet && shownStep !== "done" && (
         <div className="mb-5">
           <FrozenBanner
             wallet={wallet}
@@ -144,20 +179,38 @@ export function PeerFlow({ mode }: { mode: PeerMode }) {
           />
         </div>
       )}
-      <FlowTransition step={step}>
-        {step === "recipient" && (
-          <PeerSearch
-            question={mode === "send" ? "Who are you sending to?" : "Who are you asking?"}
-            onSelect={(profile) => {
-              setParty(profile);
-              setStep("amount");
-            }}
-          />
+      <FlowTransition step={shownStep}>
+        {shownStep === "recipient" && (
+          <div>
+            {presetUnavailable && (
+              <p
+                role="alert"
+                className="mb-4 flex items-start gap-2 rounded-xl bg-surface-2 px-3.5 py-2.5 text-sm text-ink-muted"
+              >
+                <UserRound className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" aria-hidden />
+                <span>No TeenPay user found. Nothing was sent — choose someone else.</span>
+              </p>
+            )}
+            <PeerSearch
+              question={mode === "send" ? "Who are you sending to?" : "Who are you asking?"}
+              onSelect={choose}
+            />
+          </div>
         )}
 
-        {step === "amount" && party && (
+        {shownStep === "amount" && party && (
           <div>
             <StepHeading title={mode === "send" ? `Send to ${party.handle}` : `Request from ${party.handle}`} />
+            {presetActive && !picked && origin && (
+              <p className="-mt-2 mb-4 flex items-center gap-1.5 text-xs text-ink-muted">
+                {origin === "qr" ? (
+                  <QrCode className="h-3.5 w-3.5" aria-hidden />
+                ) : (
+                  <Star className="h-3.5 w-3.5" aria-hidden />
+                )}
+                {party.name} · {origin === "qr" ? "from a TeenPay QR" : "from your favourites"}
+              </p>
+            )}
             <AmountInput
               label="Amount"
               value={digits}
@@ -189,8 +242,8 @@ export function PeerFlow({ mode }: { mode: PeerMode }) {
               maxLength={PEER_NOTE_MAX}
             />
             <div className="mt-5 flex gap-2.5">
-              <Button variant="secondary" className="flex-1" onClick={() => setStep("recipient")}>
-                Back
+              <Button variant="secondary" className="flex-1" onClick={backToRecipient}>
+                {presetActive && !picked ? "Change" : "Back"}
               </Button>
               <Button className="flex-1" disabled={amountMessage !== null} onClick={enterReview}>
                 Continue
@@ -199,7 +252,7 @@ export function PeerFlow({ mode }: { mode: PeerMode }) {
           </div>
         )}
 
-        {step === "review" && party && (
+        {shownStep === "review" && party && (
           <div>
             <StepHeading
               title={mode === "send" ? `Send ${formatINR(amount)}` : `Request ${formatINR(amount)}`}
@@ -264,7 +317,7 @@ export function PeerFlow({ mode }: { mode: PeerMode }) {
           </div>
         )}
 
-        {step === "done" && receipt && (
+        {shownStep === "done" && receipt && (
           <div className="flex flex-col items-center px-4 py-10 text-center">
             <span className="flex h-14 w-14 items-center justify-center rounded-full bg-accent/12 text-accent">
               {receipt.kind === "approval" ? (

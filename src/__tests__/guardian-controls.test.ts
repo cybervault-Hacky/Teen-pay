@@ -4,7 +4,7 @@ import {
   updateGuardianNotificationsTransition,
   updateSpendingRulesTransition,
 } from "@/sandbox/family-transitions";
-import { databaseFromState, isSandboxDatabase, migrateV1, migrateV3, migrateV4, migrateV5, migrateV6 } from "@/sandbox/persistence";
+import { databaseFromState, isSandboxDatabase, migrateV1, migrateV3, migrateV4, migrateV5, migrateV6, migrateV7 } from "@/sandbox/persistence";
 import {
   describeScheduleCadence,
   evaluatePayment,
@@ -521,11 +521,13 @@ describe("persistence — schema v3", () => {
       goals: LEGACY_SEED_GOALS,
       family: { teen: {}, parent: {}, familyName: "Sharma family" },
     };
-    // Phase 8: v1 → v3 → v4 → v5 → v6 → v7.
-    const migrated = migrateV6(
-      migrateV5(
-        migrateV4(migrateV3(migrateV1(JSON.parse(JSON.stringify(v1)), buildSeedState)), AT),
-        AT,
+    // Phase 9: v1 → v3 → v4 → v5 → v6 → v7 → v8.
+    const migrated = migrateV7(
+      migrateV6(
+        migrateV5(
+          migrateV4(migrateV3(migrateV1(JSON.parse(JSON.stringify(v1)), buildSeedState)), AT),
+          AT,
+        ),
       ),
     );
     expect(isSandboxDatabase(JSON.parse(JSON.stringify(migrated)))).toBe(true);

@@ -19,6 +19,8 @@ export type Permission =
   | "family.invite_guardian"
   | "wallet.freeze_own"
   | "payments.simulate_refund"
+  /** Phase 9: keep one's own favourites (convenience only — never authority). */
+  | "contacts.manage"
   // Guardian — a connected teen's money
   | "family.join"
   | "teen.view_overview"
@@ -42,6 +44,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "family.invite_guardian",
     "wallet.freeze_own",
     "payments.simulate_refund",
+    "contacts.manage",
     "family.disconnect",
   ],
   parent: [
@@ -73,6 +76,7 @@ export const TEEN_SELF_PERMISSIONS: readonly Permission[] = [
   "family.invite_guardian",
   "wallet.freeze_own",
   "payments.simulate_refund",
+  "contacts.manage",
 ];
 
 /** Permissions that need an active, linked guardian of the teen. */

@@ -1,5 +1,6 @@
 import type {
   AppNotification,
+  Contact,
   ApprovalRequest,
   DomainEvent,
   Family,
@@ -32,8 +33,12 @@ import type {
  * v6 — Phase 7 (Pocket Money Autopilot: recurring schedules as their
  *      own records with an append-only run history; the Phase 3
  *      preview inside guardian controls became a paused schedule).
+ * v7 — Phase 8 (Send & Request Money: TeenPay money requests as
+ *      their own records; peer transfers are ordinary operations).
+ * v8 — Phase 9 (QR & favourites: each teen's saved contacts as
+ *      owner-scoped records holding only a TeenPay ID).
  */
-export const SANDBOX_SCHEMA_VERSION = 7;
+export const SANDBOX_SCHEMA_VERSION = 8;
 
 // Money limits live in the domain (one definition); re-exported here
 // for existing imports.
@@ -108,6 +113,12 @@ export interface SandboxDatabase {
    * engine (`peer-transitions.ts`).
    */
   peerRequests: PeerRequest[];
+  /**
+   * Favourites (v8): each teen's saved TeenPay IDs. Convenience data,
+   * never authority — resolved through the directory on every use.
+   * Written only by the contact engine (`contacts.ts`).
+   */
+  contacts: Contact[];
   notifications: AppNotification[];
   familyLogs: FamilyLog[];
   securityEvents: SecurityEvent[];
@@ -146,6 +157,11 @@ export interface SandboxState {
    * writes them.
    */
   peerRequests: PeerRequest[];
+  /**
+   * The viewer's own favourites — nobody else's. Read-only in a scope:
+   * only the contact engine writes them.
+   */
+  contacts: Contact[];
   /** Per-recipient notifications, newest first. */
   notifications: AppNotification[];
   /** Non-financial family/approval events, newest first (capped). */
@@ -203,7 +219,12 @@ export type SandboxErrorCode =
   | "stale_schedule"
   | "self_transfer"
   | "unknown_request"
-  | "request_expired";
+  | "request_expired"
+  | "invalid_qr"
+  | "self_contact"
+  | "contact_exists"
+  | "unknown_contact"
+  | "contact_limit_reached";
 
 /**
  * A typed, human-readable error. `code` drives logic; `message`

@@ -350,10 +350,12 @@ describe("sandbox store — persistence and reset", () => {
     // recorded as operations. Phase 6: schema v5 (Money Spaces).
     // Phase 7: schema v6 (pocket money schedules; none in the seed).
     // Phase 8: schema v7 (TeenPay money requests; none in the seed).
+    // Phase 9: schema v8 (favourites; none in the seed).
     const stored = readStore() as SandboxDatabase;
-    expect(stored.version).toBe(7);
+    expect(stored.version).toBe(8);
     expect(stored.pocketMoneySchedules).toEqual([]);
     expect(stored.peerRequests).toEqual([]);
+    expect(stored.contacts).toEqual([]);
     expect(stored.spaces.map((s) => s.id).sort()).toEqual(["goal_bike", "spc_save_usr_aarav", "spc_save_usr_meera"]);
     expect(teenLedger(stored).length).toBe(7); // 6 seed + 1 payment
     expect(sessionPayments(stored.operations)).toBe(1);

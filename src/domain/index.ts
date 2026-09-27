@@ -5,7 +5,7 @@
  * users, families, wallets, Money Spaces (Save, goals, custom),
  * transactions,
  * recipients, payments, requests, TeenPay-to-TeenPay transfers and
- * money requests, the ledger, guardian controls,
+ * money requests, TeenPay QR identities, favourites, the ledger, guardian controls,
  * approvals, domain events, and notifications. UI code imports from `@/domain`, never from
  * deeper places, so a future backend can be added without
  * touching the screens.
@@ -18,6 +18,8 @@ export * from "./transaction";
 export * from "./recipient";
 export * from "./request";
 export * from "./peer";
+export * from "./qr";
+export * from "./contact";
 export * from "./ledger";
 export * from "./safety";
 export * from "./allowance";

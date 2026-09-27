@@ -2,8 +2,8 @@
 
 A money platform for teenagers and their families — receive pocket money, manage a balance, save toward goals, and pay trusted people. TeenPay is designed for teens first: calm, clear, and safe, without asking a teenager to juggle a traditional bank account.
 
-> **Status: Phase 8 — Send & Request Money (sandbox).**
-> On top of Phase 7 (account-owned wallets, one append-only double-entry ledger, idempotent referenced operations, ledger-derived Money Spaces, recurring pocket money): teens can **send money to another TeenPay teen** by TeenPay ID (`@meera`) and **request money** from one. Every transfer is one atomic `TRF-` operation through the same `postOperation` engine, spends only **available** money (never Spaces), respects the guardian's limits and approval threshold, and can't run twice. Requests move nothing until the payer pays; they can be declined, cancelled, or expire after 7 days. Storage schema v7, migrated from every earlier phase.
+> **Status: Phase 9 — QR Payments, Contacts & Fast Pay (sandbox).**
+> On top of Phase 8 (account-owned wallets, one append-only double-entry ledger, idempotent referenced operations, ledger-derived Money Spaces, recurring pocket money, teen-to-teen transfers and money requests): every teen has a **TeenPay QR** that holds only their public TeenPay ID. **Scan to pay** reads one with the camera (or a clearly labelled sandbox paste box), shows who it belongs to, and hands off to the existing Send or Request flow. You still enter an amount, review and confirm there. Teens can keep **favourites** for one-tap Quick Pay and Quick Request. A QR or favourite never authorizes anything: every payment is re-resolved and re-checked by the same engine, guardian rules and idempotency as before. Storage schema v8, migrated from every earlier phase.
 >
 > **No real authentication provider is active.** "Continue as Teen / Parent" starts a sandbox session on this device — no password, no OTP, no verification.
 >
@@ -48,8 +48,8 @@ cp .env.example .env.local
 ```
 src/
   app/            # Routes: /, /pay, /send, /request, /requests, /money,
-                  # /money/[spaceId], /activity, /family, /profile, /parent,
-                  # /sign-in, /create-account
+                  # /money/[spaceId], /qr, /qr/scan, /contacts, /activity,
+                  # /family, /profile, /parent, /sign-in, /create-account
   auth/           # Auth abstraction: types, AuthProvider/useAuth, sandbox service
   components/
     ui/           # Primitives: Button, Card, Input, Modal, AmountDisplay, …
@@ -57,6 +57,8 @@ src/
     home/         # Home screen sections (balance, quick actions, spaces, …)
     pay/          # Pay flow: recipient picker, amount input, step machine
     peer/         # TeenPay send/request flow, peer search, Requests center
+    qr/           # QR code (SVG), My QR screen, camera scanner, scan screen
+    contacts/     # Favourites list + favourites screen
     activity/     # Ledger-derived feed, request cards, transaction detail
     money/        # Money screen (available, spaces, space activity, actions)
     spaces/       # Space card, detail, create/edit, add/move back, archive
@@ -72,15 +74,18 @@ src/
   domain/         # Domain types: user/account, family, permissions,
                   # security, money (validation), wallet, space,
                   # transaction, recipient, request, ledger,
-                  # safety, approval, events, notification, allowance, peer
+                  # safety, approval, events, notification, allowance, peer,
+                  # qr (payload format + validator), contact
   sandbox/        # The sandbox: engine, operations, rules, transitions,
                   # space-transitions, allowance-transitions,
                   # peer (directory), peer-transitions,
+                  # qr (QR identity + resolution), contacts (favourites),
                   # family-transitions, events,
                   # identity, seed, scope,
                   # authorization, accounts, selectors, persistence,
                   # repository, and the React store
-  lib/            # Small shared helpers (cn, currency, format, ids, nav)
+  lib/            # Small shared helpers (cn, currency, format, ids, nav,
+                  # qr-matrix, qr-camera)
 ```
 
 ## Sandbox & ledger architecture
@@ -447,6 +452,110 @@ All earlier tests were kept. Tests that pinned schema v6 or the one-family seed 
 
 **Limitations.** Sandbox only, one device, no sync, no real people: "another teen" means another sandbox account in this browser. There are no contacts/favourites, no QR codes, no split bills, no recurring transfers and no push notifications. Expiry is written down lazily (when the Requests center opens) rather than by a server job. A production version would run transfers on a trusted server with the same idempotency keys.
 
+## Phase 9 — QR Payments, Contacts & Fast Pay
+
+**Status.** Complete (sandbox). Teens can show their TeenPay QR, scan someone else's to pay or request, and keep favourites for one-tap payments. **Sandbox only.** There is no UPI QR, no bank or card QR, no merchant QR and no payment provider, settlement or production QR rail. A TeenPay QR is simply a way to type someone's TeenPay ID without typing.
+
+**Architecture.** QR is a way to *find* someone, not a way to pay. It sits in front of the existing directory and flows, with no second wallet, ledger or engine.
+- `domain/qr.ts` — the payload format: `formatQrPayload`, and the one central validator `parseQrPayload`. Both are pure and deterministic, with typed problems.
+- `sandbox/qr.ts` — `qrIdentityFor` (my QR: payload + safe profile, teens only) and `resolveQrRecipient`. Resolution goes validate → directory lookup (`resolvePeer`) → eligibility → safe profile.
+- `domain/contact.ts` + `sandbox/contacts.ts` — the favourite record and its engine: `addContactTransition`, `removeContactTransition`, `selectContactViews` (memoized), `lookupContact` and `isFavourite`.
+- `lib/qr-matrix.ts` — encodes with the maintained **`qrcode`** library (error correction M) into a module matrix, which `components/qr/qr-code.tsx` renders as one SVG path. Nothing is hand-drawn. The tests decode the matrix with **jsQR** to prove it round-trips.
+- `lib/qr-camera.ts` — the camera boundary (below). It knows nothing about payments: it returns untrusted text.
+- Store (`useSandbox()`) actions:
+  - `createQrPayload()`, `resolveQrIdentity(payload)`, `startQrPayment(payload)` and `startQrRequest(payload)`. These are read-only; the last two return the recipient and an `href` into the existing flow.
+  - `addContact(teenPayId)` and `removeContact(teenPayId)`.
+- Store context values: `qr` (my identity) and `contacts.list` / `isFavourite` / `lookup`. Screens never read raw state.
+
+**Payload format.** `teenpay://user/@<username>?v=1`, for example `teenpay://user/@aarav?v=1`.
+- It holds the public TeenPay ID and a version, and nothing else. There is no account, wallet, family or guardian id, and no balance, amount, token, session or timestamp. The same person always gets the same code, and different people get different codes.
+- The validator is strict and doesn't use the URL API. It trims the input, then checks:
+  - at most 128 characters, printable ASCII only;
+  - the exact `teenpay://user/` prefix;
+  - no `#` or `%`, and at most one `?`;
+  - a path that is exactly `@username`, following the username rules;
+  - `v` is the only parameter, it appears once and it equals `1`.
+- It refuses internal-id-shaped identities (`usr_…`, `wal_…`, `fam_…` and the rest of `INTERNAL_ID_PREFIXES`); since this phase, those shapes are also reserved as usernames. It also refuses UPI and web links, unexpected or duplicate parameters, and newer versions ("This QR code is from a newer version of TeenPay.").
+- Every other failure reads "This isn't a TeenPay QR code."
+
+**Security model.** A QR is public, like a username on a poster. Anyone can print one, so it grants nothing.
+- Scanning resolves a recipient and shows their safe profile (name, `@handle`, initials); it never moves money.
+- The user confirms the person, chooses Pay or Request, and then goes through the **existing** Send or Request flow: amount → review → confirm.
+- At confirm, `sendMoney` / `createMoneyRequest` resolve the TeenPay ID again and re-run every check.
+- A spoofed code can at most point at a real, eligible TeenPay user, and the screen shows who that is before anything happens.
+- Your own code is refused ("This is your own TeenPay QR…"). Unknown people, parents, closed accounts and closed wallets all read "No TeenPay user found."
+
+**Scanner** (`/qr/scan`).
+- The camera starts only when you press **Start camera**, on this screen only. It asks for the rear camera, video only (`audio: false`).
+- It stops when a code is read, when you press Stop, when the tab is hidden and when you leave the screen. That includes leaving while the permission prompt is still open.
+- Frames go straight from `<video>` to the browser's `BarcodeDetector` (`qr_code`), in memory. They are never drawn to a kept canvas, uploaded, stored or logged.
+- The state is announced in words: starting, camera on, permission refused (with "Try camera again"), no camera, or no detector.
+- Browsers without `BarcodeDetector` or a camera say so honestly. The labelled **"Use a sandbox QR"** box ("For testing in this sandbox…") accepts pasted QR text through the same validator; nothing pretends to be a scan.
+- The scanned text goes through `resolveQrIdentity`. The result card ("Pay or request") offers Pay, Request, Add to favourites and Scan another, and receives focus.
+
+**My QR** (`/qr`). The real QR (`role="img"` with a text description), name, `@handle` and "Scan to pay me".
+- **Copy TeenPay ID** uses the Clipboard API. If that is unavailable it says so and shows the ID.
+- **Share** appears only when the Web Share API exists and shares the TeenPay ID. Otherwise a note explains that sharing isn't available. There is no fake share.
+- Parents have no TeenPay QR.
+
+**Contacts / favourites** (`/contacts`). Owner-scoped convenience, never authority.
+- **Record:** `{ contactId (ctc_…), ownerAccountId, teenPayId, createdAt, updatedAt }`. It holds no wallet or account id of the target and no name snapshot. The name shown is always the person's *current* public profile.
+- **Adding:** from search on the favourites screen, or from a scan result.
+  - Refused: yourself ("You can't add yourself to favourites."), duplicates ("@meera is already in your favourites."), unknown, parent, closed or malformed identities, internal ids, and more than 50 favourites.
+  - Adding is idempotent: the same action gives `replayed: true`, and the same key for someone else gives `duplicate`.
+  - A frozen teen can be saved, but paying them is still refused at send.
+- **Removing:** changes only the owner's list. History, requests, notifications and the other person's favourites are untouched. It works even if that person has since become unavailable.
+- **Stale favourites:** if a saved person closes their account, the row reads "Not available right now", with no name and no reason, and Pay or Request is refused ("No TeenPay user found. Nothing was sent").
+- **Privacy:** each account's scope contains only its own favourites, and a scoped write can't change them. Only active teens can keep favourites (`contacts.manage`). Adding or removing moves no money and sends no notifications.
+
+**Quick Pay / Quick Request.**
+- A favourite's **Pay @meera** / **Request from @meera** links, and a scan's Pay / Request buttons, open `/send?to=meera&via=favourite|qr` or `/request?…`: the same flow, with the recipient preselected.
+- `to` is only a TeenPay ID. It is resolved through the live directory, so an edited link can't do more than typing that ID into search. An internal id, your own ID or an unavailable person preselects nobody and shows an alert.
+- `via` only changes a caption ("Meera Kapoor · from your favourites" / "· from a TeenPay QR"). **Change** returns to search.
+- The amount, review and confirm steps are unchanged.
+
+**Guardian controls, Spaces, wallet states.** These apply unchanged, because the money path is unchanged:
+- **Limits:** per-payment and daily limits are hard stops.
+- **Approval threshold:** above it, the send asks the guardian. A QR ₹600 with a ₹500 threshold waits for approval, nothing moves until the guardian approves, and approval posts exactly one transfer.
+- **Available money only:** with ₹2,000 total and ₹1,200 in Spaces, a QR ₹900 fails ("Not enough available money. You have ₹800 available.") and Spaces are untouched.
+- **Wallet states:** a frozen or closed sender can't pay; a frozen recipient is refused and a closed one is not found.
+
+**Idempotency & authorization.** The flows keep their render-captured keys, so a double confirm still posts exactly one transfer. QR actions are read-only and store actions are bound to the signed-in account; a stale screen after sign-out gets `not_signed_in` for every QR and favourite action. Only the owner can see or remove their favourites.
+
+**Notifications & Activity.** These are identical to any send or request, with no QR- or favourite-specific notices or rows. Nothing about the QR or the favourite is stored on the transfer or request.
+
+**Persistence.** Schema **v8** adds `contacts`; QR data is derived and never stored.
+- **Migration:** on load, v1 → … → v7 → v8 runs automatically, with the original payload backed up first and every record kept. A stray `contacts` key in v7 data is dropped as foreign.
+- **Validation:** the v8 validator refuses contacts that are missing or not an array, have extra or missing fields, or have a bad id. It also refuses:
+  - an unknown or parent owner;
+  - a target that is unknown, a parent, the owner, or an `@`-prefixed or internal id;
+  - bad timestamps, or `updatedAt` before `createdAt`;
+  - duplicate ids or duplicate owner–target pairs;
+  - more than 50 per owner.
+- Such data is backed up and replaced by the seed. **Reset** is deterministic: the v8 seed has no favourites.
+
+**Screens.**
+- **Money:** balance → Send / Request / Requests → **Scan & Pay** / **My QR** → **Favourites** (up to a few, with one-tap Pay) → Spaces → activity.
+- **Home:** a compact **Scan & Pay** entry.
+- **Profile:** a TeenPay ID section linking to My QR and Favourites.
+- **Routes:** `/qr`, `/qr/scan` and `/contacts` are teen-only and protected (signed out → sign-in).
+- All icons are Lucide, statuses are in words and never colour alone, and motion respects reduced-motion settings.
+
+**Tests** (`npm test`): 658 in total (44 files). Phase 9 adds 147:
+- `qr-identity.test.ts` (53) — payload format, jsQR round-trip, 37 rejected payloads, resolution, internal-id refusal;
+- `contacts.test.ts` (20) — add, duplicates, replay, refusals, limit, removal, isolation, stale and frozen favourites;
+- `qr-contacts-persistence.test.ts` (26) — v7 → v8, reload, reset, 19 tamper cases;
+- `qr-ui.test.tsx` (32) — My QR, scanner paste path and mocked camera (start, detect, stop, hidden tab, unmount, denied), favourites, Quick Pay / Request, stale favourite, id injection, Spaces, guardian, frozen, Money, Home and Profile entry points;
+- `qr-security.test.tsx` (15) — store actions, spoofed codes, available-only (₹2,000 total / ₹1,200 in Spaces → QR ₹900 refused), cross-account, id injection, stale signed-out screens, protected routes;
+- `phase9-journey.test.tsx` — a 43-step journey through the real app.
+
+All earlier tests were kept. Tests that pinned schema v7 now expect v8 with `contacts: []`, and the migration chains in older persistence tests now also run the v7 → v8 step.
+
+**Limitations.**
+- The camera path needs a browser with `BarcodeDetector` (Chromium on Android, desktop Chrome/Edge on some platforms). Elsewhere the scanner offers the sandbox paste box. The camera hasn't been exercised on a real device in this project's automated checks, which mock the camera APIs.
+- Sandbox only, one device, no sync, and QR codes don't carry amounts.
+- There are no printed or offline codes, and favourites can't be reordered or nicknamed.
+
 ## Design system
 
 All styling flows from the semantic tokens in `src/app/globals.css`:
@@ -480,5 +589,6 @@ Money is rendered exclusively through `AmountDisplay` (tabular numerals, INR for
 - **Phase 5** — account-owned wallets, append-only double-entry ledger, idempotent operations with references, derived balances and transaction queries, wallet freeze, sandbox refunds, repository-level wallet isolation, schema v4 migration
 - **Phase 6** — Money Spaces: default Save, goals with target/date, custom spaces, ledger-derived Space balances, available vs allocated money, idempotent `SPC-` moves, archive with history, private-by-default Space details, schema v5 migration
 - **Phase 7** — Pocket Money Autopilot: weekly/monthly schedules from a parent's wallet to a linked teen's, explicit idempotent execution (one `ALW-` operation per transfer day), missed-day and insufficient-funds policies, freeze safety, pause/resume/cancel/end date, parent and teen screens, schema v6 migration
-- **Phase 8 (this)** — Send & Request Money: teen-to-teen transfers by TeenPay ID (one atomic `TRF-` operation, available money only, idempotent), money requests (pending → accepted / declined / cancelled / expired after 7 days), guardian limits and approvals for transfers, privacy-safe directory, Requests center, schema v7 migration
+- **Phase 8** — Send & Request Money: teen-to-teen transfers by TeenPay ID (one atomic `TRF-` operation, available money only, idempotent), money requests (pending → accepted / declined / cancelled / expired after 7 days), guardian limits and approvals for transfers, privacy-safe directory, Requests center, schema v7 migration
+- **Phase 9 (this)** — QR Payments, Contacts & Fast Pay: a versioned TeenPay QR holding only the public TeenPay ID, a strict central validator, a camera scanner (BarcodeDetector) with an honest sandbox paste path, scan → confirm → existing Send/Request flow, owner-scoped favourites with Quick Pay / Quick Request, schema v8 migration
 - **Later (recommendation only)** — a real auth provider behind `AuthService` and a cloud repository behind the repository contract, then real payment rails with a regulated provider

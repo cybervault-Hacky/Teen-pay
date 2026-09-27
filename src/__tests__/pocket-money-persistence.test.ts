@@ -83,9 +83,10 @@ describe("migration — Phase 6 (v5) → Phase 7 (v6 pocket money schedules)", (
     if (result.kind !== "migrated") return;
     expect(result.from).toBe(5);
     const db = result.db;
-    // Phase 8: v5 → v6 → v7 (the current schema).
-    expect(db.version).toBe(7);
+    // Phase 9: v5 → v6 → v7 → v8 (the current schema).
+    expect(db.version).toBe(8);
     expect(db.peerRequests).toEqual([]);
+    expect(db.contacts).toEqual([]);
     expect(isSandboxDatabase(clone(db))).toBe(true);
 
     // Money, accounts, Spaces, notifications: untouched.
@@ -169,9 +170,9 @@ describe("migration — Phase 6 (v5) → Phase 7 (v6 pocket money schedules)", (
     if (none.kind === "migrated") expect(none.db.pocketMoneySchedules).toEqual([]);
   });
 
-  it("the seed is v7 with no schedules; reset is deterministic", () => {
+  it("the seed is v8 with no schedules; reset is deterministic", () => {
     const seed = buildSeedDatabase();
-    expect(seed.version).toBe(7);
+    expect(seed.version).toBe(8);
     expect(seed.pocketMoneySchedules).toEqual([]);
     expect(buildSeedDatabase()).toEqual(seed);
     const storage = memoryStorage();

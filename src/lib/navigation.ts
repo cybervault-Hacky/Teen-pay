@@ -69,6 +69,9 @@ export const PROTECTED_ROUTES = [
   "/send",
   "/request",
   "/requests",
+  // Phase 9: QR & favourites ("/qr" covers "/qr/scan").
+  "/qr",
+  "/contacts",
 ] as const;
 
 export function isAuthRoute(pathname: string): boolean {

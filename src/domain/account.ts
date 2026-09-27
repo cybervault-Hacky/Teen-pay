@@ -40,6 +40,25 @@ const RESERVED_USERNAMES = new Set([
   "teenpay",
 ]);
 
+/**
+ * Prefixes of the sandbox's internal record ids (accounts, wallets,
+ * families, members, recipients, requests, operations, contacts…).
+ * Phase 9: a new TeenPay ID can't start with one (it reads as
+ * "reserved"), and the directory and QR parser refuse such input, so
+ * an internal id can never pass for — or be looked up as — a person.
+ */
+export const INTERNAL_ID_PREFIXES = [
+  "usr", "wal", "fam", "mem", "rec", "acc", "inv", "ctc", "prq", "p2p", "snd",
+  "trf", "apr", "ntf", "evt", "req", "pay", "pms", "spc", "space", "goal", "seed",
+] as const;
+
+const INTERNAL_ID_PATTERN = new RegExp(`^(${INTERNAL_ID_PREFIXES.join("|")})_`, "i");
+
+/** True for strings shaped like an internal record id (`usr_…`, `wal_…`). */
+export function looksLikeInternalId(value: string): boolean {
+  return INTERNAL_ID_PATTERN.test(value.trim().replace(/^@+/, ""));
+}
+
 /** Trims, drops a leading "@", lowercases. */
 export function normalizeUsername(raw: string): string {
   return raw.trim().replace(/^@+/, "").toLowerCase();
@@ -92,7 +111,7 @@ export function checkUsername(
     if (/[_.]{2,}/.test(username) || /[_.]$/.test(username)) {
       return "invalid_punctuation";
     }
-    if (RESERVED_USERNAMES.has(username)) return "reserved";
+    if (RESERVED_USERNAMES.has(username) || looksLikeInternalId(username)) return "reserved";
     if (isTaken(username)) return "taken";
     return null;
   })();

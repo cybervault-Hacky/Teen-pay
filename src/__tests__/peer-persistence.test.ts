@@ -7,7 +7,7 @@ import {
   requestIdFor,
   sendMoneyTransition,
 } from "@/sandbox/peer-transitions";
-import { isSandboxDatabase, isV6Database, migrateToCurrent, migrateV6 } from "@/sandbox/persistence";
+import { isSandboxDatabase, isV6Database, isV7Database, migrateToCurrent, migrateV6, migrateV7 } from "@/sandbox/persistence";
 import {
   createLocalRepository,
   describeLoadOutcome,
@@ -43,8 +43,10 @@ function ok<T extends { result: { ok: boolean }; db: SandboxDatabase }>(out: T):
 
 /** A Phase 7 (v6) database: today's minus peerRequests (and Meera, who arrived in the v7 seed). */
 function v6Database(): Record<string, unknown> {
-  const { peerRequests: _drop, ...rest } = clone(buildSeedDatabase());
+  // (Phase 9: nor favourites — v6 never had them.)
+  const { peerRequests: _drop, contacts: _contacts, ...rest } = clone(buildSeedDatabase());
   void _drop;
+  void _contacts;
   return { ...rest, version: 6 };
 }
 
@@ -74,7 +76,10 @@ describe("migration — Phase 7 (v6) → Phase 8 (v7 money requests)", () => {
     for (const key of ["accounts", "wallets", "ledger", "operations", "spaces", "pocketMoneySchedules", "families", "notifications"]) {
       expect((db as unknown as Record<string, unknown>)[key]).toEqual(v6[key]);
     }
-    expect(isSandboxDatabase(db)).toBe(true);
+    // Phase 9: v7 is now a step on the way to v8 (favourites).
+    expect(isV7Database(db)).toBe(true);
+    expect(isSandboxDatabase(db)).toBe(false);
+    expect(isSandboxDatabase(migrateV7(db))).toBe(true);
   });
 
   it("stored v6 data is backed up first, upgraded on load, and never migrated twice", () => {
@@ -92,10 +97,14 @@ describe("migration — Phase 7 (v6) → Phase 8 (v7 money requests)", () => {
     expect(second.db).toEqual(first.db);
   });
 
-  it("the whole chain still lands on v7", () => {
+  it("the whole chain still lands on the current schema (v8 since Phase 9)", () => {
     const result = migrateToCurrent(v6Database(), { seedView: buildSeedState, now: NOW });
     expect(result.kind).toBe("migrated");
-    if (result.kind === "migrated") expect(result.db.version).toBe(7);
+    if (result.kind === "migrated") {
+      expect(result.db.version).toBe(8);
+      expect(result.db.peerRequests).toEqual([]);
+      expect(result.db.contacts).toEqual([]);
+    }
   });
 });
 
@@ -117,14 +126,15 @@ describe("persistence — transfers and requests survive reload exactly", () => 
     expect(resend.db).toBe(loaded.db);
   });
 
-  it("reset is deterministic: the v7 seed, with no requests", () => {
+  it("reset is deterministic: the current (v8) seed, with no requests", () => {
     const storage = memoryStorage();
     storage.setItem(SANDBOX_STORAGE_KEY, JSON.stringify(withPeerActivity()));
     const repo = createLocalRepository(() => storage);
     const seed = repo.reset();
     expect(seed).toEqual(buildSeedDatabase());
-    expect(seed.version).toBe(7);
+    expect(seed.version).toBe(8);
     expect(seed.peerRequests).toEqual([]);
+    expect(seed.contacts).toEqual([]);
   });
 });
 
