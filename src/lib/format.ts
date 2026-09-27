@@ -1,77 +1,110 @@
 /**
- * Formatting helpers — the single place where money, dates and counts
- * are turned into display strings. Money is always handled in the
- * smallest currency unit (paise for INR) to avoid float errors.
+ * Deterministic, absolute date formatting.
+ *
+ * Two rules keep rendering stable everywhere:
+ * · Server-rendered output never says "Today" / "Yesterday" —
+ *   relative labels depend on wall-clock time and would
+ *   desynchronize server and client. `relativeDayLabel` exists for
+ *   client-only screens (behind the auth gate), which pass "now" in
+ *   explicitly and always keep the absolute date next to it.
+ * · Always render in Asia/Kolkata, the product's timezone, so the
+ *   same ISO instant always produces the same string regardless of
+ *   the viewer's device timezone.
  */
+const TIME_ZONE = "Asia/Kolkata";
 
-const inrFormatter = new Intl.NumberFormat("en-IN", {
-  style: "currency",
-  currency: "INR",
-  maximumFractionDigits: 0,
+const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: TIME_ZONE,
+  day: "numeric",
+  month: "short",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
 });
 
-const inrExactFormatter = new Intl.NumberFormat("en-IN", {
-  style: "currency",
-  currency: "INR",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
+const fullDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: TIME_ZONE,
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
 });
 
-const compactFormatter = new Intl.NumberFormat("en-IN", {
-  notation: "compact",
-  maximumFractionDigits: 1,
+const dayLabelFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: TIME_ZONE,
+  day: "numeric",
+  month: "short",
 });
 
-/** Format paise as INR, e.g. 245000 -> "₹2,450". */
-export function formatINR(paise: number, opts?: { exact?: boolean }): string {
-  const rupees = paise / 100;
-  return opts?.exact ? inrExactFormatter.format(rupees) : inrFormatter.format(rupees);
+/** "25 Sep, 9:00 am" */
+export function formatDateTime(iso: string): string {
+  return dateTimeFormatter.format(new Date(iso));
+}
+
+/** "Friday, 25 September 2026, 9:00 am" */
+export function formatFullDateTime(iso: string): string {
+  return fullDateTimeFormatter.format(new Date(iso));
+}
+
+/** "25 Sep" — used as group labels in the activity feed. */
+export function formatDayLabel(iso: string): string {
+  return dayLabelFormatter.format(new Date(iso));
+}
+
+/** Calendar key (in the product timezone) used to group rows by day. */
+export function dayKey(iso: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(iso));
+  return parts; // "YYYY-MM-DD"
 }
 
 /**
- * Signed amount for ledger-style rows, e.g. +₹1,000 / −₹349.
- * Uses the proper minus sign (U+2212) for typographic polish.
+ * "Today" / "Yesterday" relative to `nowIso` (product timezone), or
+ * null for older days. Client-only: callers pass "now" explicitly.
  */
-export function formatSignedINR(paise: number, direction: "in" | "out"): string {
-  const sign = direction === "in" ? "+" : "−";
-  return `${sign}${formatINR(Math.abs(paise))}`;
+export function relativeDayLabel(iso: string, nowIso: string): "Today" | "Yesterday" | null {
+  const day = dayKey(iso);
+  if (day === dayKey(nowIso)) return "Today";
+  const yesterday = new Date(Date.parse(nowIso) - 24 * 60 * 60 * 1000).toISOString();
+  return day === dayKey(yesterday) ? "Yesterday" : null;
 }
 
-/** Compact figure for dense UI, e.g. 1250000 -> "₹12.5L"? No — plain compact. */
-export function formatCompactNumber(value: number): string {
-  return compactFormatter.format(value);
+/** Initials for avatars, e.g. "Riya Patel" → "RP". */
+export function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  const first = parts[0]?.[0] ?? "";
+  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
+  return (first + last).toUpperCase() || name.slice(0, 2).toUpperCase();
 }
 
-/** "Today", "Yesterday", or a short date like "24 Sep". */
-export function formatDayLabel(isoDate: string, now: Date = new Date()): string {
-  const date = new Date(isoDate);
-  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diffDays = Math.round(
-    (startOf(now).getTime() - startOf(date).getTime()) / 86_400_000,
-  );
-  if (diffDays <= 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  return date.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+const dateKeyFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: TIME_ZONE,
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+});
+
+/** "2026-09-28" → "Mon, Sep 28" (calendar key in the product timezone). */
+export function formatDateKey(key: string): string {
+  // Noon UTC is the same calendar day in Asia/Kolkata.
+  return dateKeyFormatter.format(new Date(`${key}T12:00:00Z`));
 }
 
-/** Short time, e.g. "6:42 pm". */
-export function formatTime(isoDate: string): string {
-  return new Date(isoDate)
-    .toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })
-    .toLowerCase();
-}
+const longDateKeyFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: TIME_ZONE,
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
 
-/** Percentage with clamping, e.g. progress of a savings goal. */
-export function formatPercent(numerator: number, denominator: number): string {
-  if (denominator <= 0) return "0%";
-  const pct = Math.min(100, Math.max(0, (numerator / denominator) * 100));
-  return `${Math.round(pct)}%`;
-}
-
-/** Initials for avatars, e.g. "Aarav Sharma" -> "AS". */
-export function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+/** "2026-11-30" → "Nov 30, 2026" (calendar key in the product timezone). */
+export function formatLongDateKey(key: string): string {
+  return longDateKeyFormatter.format(new Date(`${key}T12:00:00Z`));
 }

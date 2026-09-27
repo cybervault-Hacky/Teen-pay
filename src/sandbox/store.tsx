@@ -1,15 +1,3 @@
-/**
- * Sandbox store — the single client-side boundary for financial state.
- *
- * UI components consume typed selectors + actions through `useSandbox()`
- * and never touch localStorage or mutate entries directly. Actions run
- * the pure ledger engine against a state snapshot (StrictMode-safe),
- * then commit + persist atomically.
- *
- * Phase 17+ replaces this provider with a backend-backed implementation
- * behind the same hook shape — screens stay untouched.
- */
-
 "use client";
 
 import {
@@ -20,557 +8,907 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
+import { useOptionalAuth } from "@/auth/provider";
+import type { AuthEvent } from "@/auth/types";
 import type {
-  AppNotification,
-  Household,
-  LedgerSpace,
-  Merchant,
-  MoneyRequest,
-  ParentProfile,
-  SavingsGoal,
-  TeenProfile,
-  TeenWallet,
-  Transaction,
-  TrustedRecipient,
+  AccountProfile,
+  ApprovalRequest,
+  PocketMoneyFrequency,
+  ApprovalRule,
+  NewAccountInput,
+  SecurityEvent,
+  SpendingLimits,
+  User,
+  UserRole,
+  UsernameCheck,
+  WalletStatus,
 } from "@/domain";
+import { makeId, makeInviteCode } from "@/lib/ids";
 import {
-  goalBlueprints,
-  mockHousehold,
-  mockMerchants,
-  mockRecipients,
-  mockTeen,
-} from "@/data/mock";
-import { isGoalComplete } from "@/domain";
-import { formatINR } from "@/lib/format";
-import { validateTransferPaise } from "./amounts";
-import { newOperationKey, uid } from "./ids";
+  cancelAccountDeletion,
+  checkUsernameAvailability,
+  createAccount,
+  familyIdForInviteCode,
+  inviteCodesInUse,
+  recordSecurityEvent,
+  requestAccountDeletion,
+  sandboxSwitchTarget,
+  securityEventsFor,
+} from "./accounts";
 import {
-  postAllowance,
-  postGoalContribution,
-  postPayment,
-  postSpaceMove,
-  type LedgerEvent,
-  type PostOutcome,
-} from "./ledger";
-import { deriveGoals, deriveWallet, projectTransactions } from "./projection";
-import { createSeedState } from "./seed";
+  acceptInviteTransition,
+  cancelInviteTransition,
+  claimInviteTransition,
+  createInviteTransition,
+  disconnectTransition,
+  releaseInviteTransition,
+  updateGuardianNotificationsTransition,
+  updateSpendingRulesTransition,
+} from "./family-transitions";
 import {
-  clearPersistedState,
-  loadPersistedState,
-  savePersistedState,
-  type SandboxState,
-  type StorageIssue,
-  type StorageLike,
-} from "./storage";
+  cancelPocketMoneyScheduleTransition,
+  createPocketMoneyScheduleTransition,
+  executeDuePocketMoneyTransition,
+  pausePocketMoneyScheduleTransition,
+  resumePocketMoneyScheduleTransition,
+  updatePocketMoneyScheduleTransition,
+  type ExecutePocketMoneyResult,
+  type PocketMoneyScheduleResult,
+  type UpdatePocketMoneyInput,
+} from "./allowance-transitions";
+import {
+  createLocalRepository,
+  describeLoadOutcome,
+  type SandboxRepository,
+} from "./repository";
+import { accessMemberships, accountProfile, findAccount, mergeScope, scopeFor, type ScopeInfo } from "./scope";
+import { SEED_TEEN_ID, buildSeedDatabase } from "./seed";
+import {
+  archiveSpaceTransition,
+  createSpaceTransition,
+  moveSpaceMoneyTransition,
+  updateSpaceTransition,
+  type ArchiveResult,
+  type CreateSpaceInput,
+  type SpaceMoveResult,
+  type UpdateSpaceInput,
+} from "./space-transitions";
+import {
+  cancelApprovalTransition,
+  createRequestTransition,
+  decideApprovalTransition,
+  markAllNotificationsRead,
+  markNotificationRead,
+  payTransition,
+  refundTransition,
+  respondRequestTransition,
+  sendAllowanceTransition,
+  setWalletStatusTransition,
+  type PayOutcome,
+  type TransitionOutput,
+} from "./transitions";
+import {
+  acceptMoneyRequestTransition,
+  approveTransferTransition,
+  cancelMoneyRequestTransition,
+  createMoneyRequestTransition,
+  declineMoneyRequestTransition,
+  expireMoneyRequestsTransition,
+  sendMoneyTransition,
+  type AcceptMoneyRequestOutcome,
+  type MoneyRequestOutcome,
+  type PeerOutput,
+  type SendMoneyOutcome,
+} from "./peer-transitions";
+import { lookupPeer, searchPeers } from "./peer";
+import {
+  addContactTransition,
+  isFavourite,
+  lookupContact,
+  removeContactTransition,
+  selectContactViews,
+  type AddContactOutcome,
+  type ContactView,
+} from "./contacts";
+import { qrIdentityFor, resolveQrRecipient, type QrIdentity } from "./qr";
+import { coachReportFor } from "./coach";
+import {
+  advanceMissionTransition,
+  missionBoardFor,
+  missionDetailFor,
+  startMissionTransition,
+} from "./missions";
+import type { CoachPeriod, CoachReport, MissionBoard, MissionView, PeerProfile } from "@/domain";
+import type { SandboxDatabase, SandboxError, SandboxResult, SandboxState } from "./types";
 
-export type ActionResult<T extends object | void = void> = T extends void
-  ? { ok: true } | { ok: false; error: string }
-  : ({ ok: true } & T) | { ok: false; error: string };
+/**
+ * The single client-side boundary between the UI and sandbox data.
+ *
+ *   AuthProvider (who is acting) ──▶ SandboxProvider ──▶ repository
+ *
+ * Two contexts:
+ *  - `useSandboxData()` — account-level things that exist whether or
+ *    not anyone is signed in: the sandbox account directory, username
+ *    checks, account creation, reset.
+ *  - `useSandbox()` — the signed-in account's scoped view (its family,
+ *    the wallet it may see, its notifications) plus actions. Every
+ *    action runs as the session's account; authorization is decided
+ *    in the domain from memberships, never from what the UI shows.
+ *
+ * Components never touch storage, the ledger or write paths directly.
+ */
 
-export interface SendPaymentInput {
-  recipient: TrustedRecipient;
-  amountPaise: number;
-  note?: string;
-  idempotencyKey?: string;
-}
+export interface SandboxActions {
+  /**
+   * Send a sandbox payment. `idempotencyId` is generated once when
+   * the user reaches review; replaying it is a no-op. The outcome
+   * says whether it completed or is waiting for guardian approval.
+   */
+  pay: (input: {
+    idempotencyId?: string;
+    recipientId: string;
+    amount: number;
+    note?: string;
+  }) => SandboxResult<PayOutcome>;
+  createRequest: (input: {
+    idempotencyId?: string;
+    recipientId: string;
+    amount: number;
+    note?: string;
+  }) => SandboxResult;
+  respondToRequest: (
+    requestId: string,
+    response: "paid" | "cancelled",
+  ) => SandboxResult;
+  /**
+   * Money actions take an `idempotencyId` generated once per user
+   * intent (e.g. when a confirm sheet opens); a double click, retry
+   * or stale re-submit with the same id changes nothing.
+   */
+  sendAllowance: (input: { amount: number; note?: string; idempotencyId?: string }) => SandboxResult;
 
-export interface CreateRequestInput {
-  targetName: string;
-  targetHandle?: string;
-  targetKind: "parent" | "teen";
-  amountPaise: number;
-  note?: string;
-}
-
-export interface AllowanceInput {
-  amountPaise: number;
-  note?: string;
-  idempotencyKey?: string;
-}
-
-export interface SpaceMoveActionInput {
-  fromSpace: LedgerSpace;
-  toSpace: LedgerSpace;
-  amountPaise: number;
-  idempotencyKey?: string;
-}
-
-export interface GoalContributionActionInput {
-  goalId: string;
-  fromSpace: LedgerSpace;
-  amountPaise: number;
-  idempotencyKey?: string;
-}
-
-export interface SandboxContextValue {
-  ready: boolean;
-  storageIssue: StorageIssue | null;
-  teen: TeenProfile;
-  parent: ParentProfile;
-  household: Household;
-  recipients: TrustedRecipient[];
-  merchants: Merchant[];
-  wallet: TeenWallet;
-  transactions: Transaction[];
-  goals: SavingsGoal[];
-  /** Newest-first. */
-  requests: MoneyRequest[];
-  pendingRequests: MoneyRequest[];
-  /** Newest-first. */
-  notifications: AppNotification[];
-  unreadCount: number;
-  sendPayment: (input: SendPaymentInput) => ActionResult;
-  createRequest: (input: CreateRequestInput) => ActionResult<{ request: MoneyRequest }>;
-  cancelRequest: (requestId: string) => ActionResult;
-  fulfillRequest: (requestId: string) => ActionResult;
-  sendAllowance: (input: AllowanceInput) => ActionResult;
-  moveBetweenSpaces: (input: SpaceMoveActionInput) => ActionResult;
-  contributeToGoal: (input: GoalContributionActionInput) => ActionResult;
-  markNotificationRead: (id: string) => void;
+  // ── Money Spaces (the owner only; see space-transitions.ts) ──
+  /** Creates a goal or custom Space; `idempotencyId` becomes its id. */
+  createSpace: (
+    input: Omit<CreateSpaceInput, "spaceId" | "actorId" | "at"> & { idempotencyId?: string },
+  ) => SandboxResult<SpaceMoveResult>;
+  updateSpace: (
+    spaceId: string,
+    changes: Omit<UpdateSpaceInput, "spaceId" | "actorId" | "at">,
+  ) => SandboxResult<{ spaceId: string }>;
+  /** Moves any balance back to available, then archives. */
+  archiveSpace: (spaceId: string, idempotencyId?: string) => SandboxResult<ArchiveResult>;
+  /** Available → Space. */
+  addToSpace: (spaceId: string, amount: number, idempotencyId?: string) => SandboxResult<SpaceMoveResult>;
+  /** Space → available. */
+  withdrawFromSpace: (
+    spaceId: string,
+    amount: number,
+    idempotencyId?: string,
+  ) => SandboxResult<SpaceMoveResult>;
+  /** Sandbox only: simulate the recipient refunding a payment in full. */
+  simulateRefund: (entryId: string) => SandboxResult<{ reference: string }>;
+  /** Sandbox safety switch: freeze or unfreeze a teen wallet. */
+  setWalletFrozen: (walletId: string, frozen: boolean) => SandboxResult<{ status: WalletStatus }>;
+  /** Marks the current user's notifications read. Never affects money. */
   markAllNotificationsRead: () => void;
+  markNotificationRead: (id: string) => void;
+
+  // ── Sandbox role switch (transparent demo control, not sign-in) ──
+  switchRole: (role: UserRole) => SandboxResult<{ userId: string }>;
+
+  // ── Family linking ──
+  createFamilyInvite: () => SandboxResult<{ code: string }>;
+  cancelFamilyInvite: () => SandboxResult;
+  claimFamilyInvite: (code: string) => SandboxResult<{ teenId: string }>;
+  releaseFamilyInvite: (teenId: string) => SandboxResult;
+  acceptFamilyInvite: (teenId: string) => SandboxResult;
+  disconnectFamily: (teenId: string) => SandboxResult;
+
+  // ── Guardian controls ──
+  updateSpendingRules: (input: {
+    teenId: string;
+    limits: SpendingLimits;
+    approval: ApprovalRule;
+  }) => SandboxResult;
+  updateGuardianNotifications: (input: {
+    teenId: string;
+    payments: boolean;
+    savings: boolean;
+  }) => SandboxResult;
+
+  // ── Pocket Money Autopilot (the paying parent; see allowance-transitions.ts) ──
+  /**
+   * Creates a recurring schedule from the parent's wallet to the teen's.
+   * `idempotencyId` (generated once per form) becomes its id, so a
+   * double submit creates one schedule. Wallets are derived in the
+   * engine; any echoed ids are verified, never trusted.
+   */
+  createPocketMoneySchedule: (input: {
+    idempotencyId?: string;
+    teenId: string;
+    amount: number;
+    frequency: PocketMoneyFrequency;
+    dayOfWeek: number;
+    dayOfMonth: number;
+    startDate: string;
+    endDate?: string;
+    sourceWalletId?: string;
+    destinationWalletId?: string;
+  }) => SandboxResult<PocketMoneyScheduleResult>;
+  /** Edits the plan; refused when `expectedVersion` is stale. */
+  updatePocketMoneySchedule: (
+    input: Omit<UpdatePocketMoneyInput, "actorId" | "at">,
+  ) => SandboxResult<PocketMoneyScheduleResult>;
+  pausePocketMoneySchedule: (
+    scheduleId: string,
+    expectedVersion?: number,
+  ) => SandboxResult<PocketMoneyScheduleResult>;
+  resumePocketMoneySchedule: (
+    scheduleId: string,
+    expectedVersion?: number,
+  ) => SandboxResult<PocketMoneyScheduleResult>;
+  cancelPocketMoneySchedule: (
+    scheduleId: string,
+    expectedVersion?: number,
+  ) => SandboxResult<PocketMoneyScheduleResult>;
+  /**
+   * Sandbox execution — nothing runs on a timer. Processes due
+   * occurrences as of `asOf` (default: now); each occurrence at most
+   * once, ever.
+   */
+  executeDuePocketMoney: (input?: {
+    asOf?: string;
+    scheduleId?: string;
+  }) => SandboxResult<ExecutePocketMoneyResult>;
+
+  // ── TeenPay-to-TeenPay money (see peer-transitions.ts) ──
+  /**
+   * Sends from the viewer's available balance to another TeenPay teen,
+   * named by TeenPay ID ("@meera"). `idempotencyKey` is generated once
+   * per send (when review opens); a repeat returns the original result
+   * and never posts twice. Above the guardian's threshold, it waits
+   * for approval instead — nothing moves until then.
+   */
+  sendMoney: (input: {
+    recipient: string;
+    amount: number;
+    note?: string;
+    idempotencyKey: string;
+  }) => SandboxResult<SendMoneyOutcome>;
+  /** Asks another teen for money. Moves nothing. */
+  createMoneyRequest: (input: {
+    payer: string;
+    amount: number;
+    note?: string;
+    idempotencyKey: string;
+  }) => SandboxResult<MoneyRequestOutcome>;
+  /** The payer pays a pending request — exactly once. */
+  acceptMoneyRequest: (requestId: string) => SandboxResult<AcceptMoneyRequestOutcome>;
+  /** The payer declines. No money moves. */
+  declineMoneyRequest: (requestId: string) => SandboxResult<{ status: "declined" }>;
+  /** The requester withdraws a pending request. No money moves. */
+  cancelMoneyRequest: (requestId: string) => SandboxResult<{ status: "cancelled" }>;
+  /**
+   * Records expiry for the viewer's requests past their 7 days (no
+   * timer: expiry is computed from timestamps; this only writes it down).
+   */
+  expireMoneyRequests: () => SandboxResult<{ expired: number }>;
+
+  // ── QR & favourites (discovery only — see qr.ts, contacts.ts) ──
+  /** Saves an eligible TeenPay teen to the viewer's favourites. */
+  addContact: (teenPayId: string, idempotencyKey?: string) => SandboxResult<AddContactOutcome>;
+  /** Removes one of the viewer's favourites. Touches nothing else. */
+  removeContact: (teenPayId: string) => SandboxResult<{ removed: string }>;
+  /** Scanned or pasted text → a safe recipient profile (untrusted input). */
+  resolveQrIdentity: (payload: string) => SandboxResult<PeerProfile>;
+  /** The viewer's own QR: `teenpay://user/@handle?v=1` and their public profile. */
+  createQrPayload: () => SandboxResult<QrIdentity>;
+  /**
+   * Resolves a QR and returns where the existing Send Money flow opens
+   * with that recipient preselected. Moves nothing: the person still
+   * enters an amount, reviews and confirms through `sendMoney`.
+   */
+  startQrPayment: (payload: string) => SandboxResult<{ recipient: PeerProfile; href: string }>;
+  /** Same, into the existing Request Money flow (`createMoneyRequest`). */
+  startQrRequest: (payload: string) => SandboxResult<{ recipient: PeerProfile; href: string }>;
+
+  // ── Money Coach (read-only — see coach.ts) ──
+  /**
+   * The signed-in teen's Money Coach report for a period: summary,
+   * insights, goals and lessons, derived from their own wallet. Reads
+   * only — it can't move money or change anything. Parents get
+   * `not_permitted`; a signed-out (stale) screen gets `not_signed_in`.
+   */
+  coachReport: (period: CoachPeriod) => SandboxResult<CoachReport>;
+
+  // ── Money Missions (learning progress only — see missions.ts) ──
+  /** The signed-in teen's missions, statuses and progress. Read-only. */
+  missionBoard: () => SandboxResult<MissionBoard>;
+  /** One mission as the signed-in teen sees it. Read-only. */
+  missionDetail: (missionId: string) => SandboxResult<MissionView>;
+  /** Starts a mission. Records learning progress only — never money. */
+  startMission: (missionId: string) => SandboxResult<MissionView>;
+  /**
+   * Finishes the current step of a started mission after the engine
+   * checks it (order, answer, evidence). Records learning progress
+   * only; a repeat changes nothing.
+   */
+  advanceMission: (missionId: string, stepId: string, answer?: number) => SandboxResult<MissionView>;
+
+  // ── Approvals ──
+  decideApproval: (
+    approvalId: string,
+    decision: "approve" | "decline",
+  ) => SandboxResult<{ status: ApprovalRequest["status"] }>;
+  cancelApproval: (approvalId: string) => SandboxResult;
+
+  /** Returns the whole sandbox to its deterministic initial state and signs out. */
   resetSandbox: () => void;
 }
 
+export type StorageStatus = "loading" | "ready" | "unavailable";
+
+export interface SandboxDataValue {
+  /** False until stored data has been read (SSR + first render use the seed). */
+  ready: boolean;
+  storageStatus: StorageStatus;
+  /** A one-off message about loading/migrating stored data. */
+  storageNotice: string | null;
+  dismissStorageNotice: () => void;
+  /** Active sandbox accounts on this device (for "Continue as"). */
+  directory: User[];
+  findAccount: (accountId: string) => User | null;
+  /** The account with its derived family membership. */
+  accountProfile: (accountId: string) => AccountProfile | null;
+  checkUsername: (raw: string) => UsernameCheck;
+  createAccount: (input: NewAccountInput) => SandboxResult<{ account: User }>;
+  requestAccountDeletion: (accountId: string) => SandboxResult;
+  cancelAccountDeletion: (accountId: string) => void;
+  securityEvents: (accountId: string) => SecurityEvent[];
+  resetSandbox: () => void;
+}
+
+export interface SandboxContextValue {
+  state: SandboxState;
+  storageStatus: StorageStatus;
+  actions: SandboxActions;
+  /** The signed-in account. */
+  viewer: User;
+  /** What this view was granted (family, wallet). */
+  scope: ScopeInfo;
+  /** Who "Switch role" would move to, per role. */
+  switchTargets: Record<UserRole, User | null>;
+  /**
+   * Finding people to send to or request from: only eligible TeenPay
+   * teens, only display-safe profiles (@handle, name, initials) — no
+   * account, wallet or family details. Never includes the viewer.
+   */
+  peers: {
+    search: (query: string) => PeerProfile[];
+    lookup: (teenPayId: string) => PeerProfile | null;
+  };
+  /** The viewer's own TeenPay QR (null for parents / ineligible accounts). */
+  qr: QrIdentity | null;
+  /**
+   * The viewer's favourites, resolved against current state (public
+   * profiles only; `available: false` for people who can't take part).
+   */
+  contacts: {
+    list: ContactView[];
+    isFavourite: (teenPayId: string) => boolean;
+    /** A favourite's current profile, only while in the list and eligible. */
+    lookup: (teenPayId: string) => PeerProfile | null;
+  };
+}
+
+const SandboxDataContext = createContext<SandboxDataValue | null>(null);
 const SandboxContext = createContext<SandboxContextValue | null>(null);
 
-function buildNotification(
-  draft: Omit<AppNotification, "id" | "read" | "createdAt">,
-  now: string,
-): AppNotification {
-  return { ...draft, id: uid("n"), read: false, createdAt: now };
-}
+const SOMETHING_WENT_WRONG: SandboxError = {
+  code: "invalid_transition",
+  message: "Something went wrong, so nothing was changed. Please try again.",
+};
 
-/** Map engine events to notifications (moves stay quiet by design). */
-function notificationsForEvent(event: LedgerEvent, now: string): AppNotification[] {
-  switch (event.type) {
-    case "payment_sent": {
-      const firstName = event.recipientName.split(" ")[0];
-      return [
-        buildNotification(
-          {
-            kind: "money_out",
-            title: `Sent ${formatINR(event.amountPaise)} to ${firstName}`,
-            body: event.note ?? `Sandbox payment${event.handle ? ` to ${event.handle}` : ""}`,
-            href: "/activity",
-          },
-          now,
-        ),
-      ];
-    }
-    case "allowance_received":
-      return [
-        buildNotification(
-          {
-            kind: "money_in",
-            title: `Received ${formatINR(event.amountPaise)}`,
-            body: event.requestId
-              ? `Pocket money from ${event.parentName} · request paid`
-              : `Pocket money from ${event.parentName}`,
-            href: "/activity",
-          },
-          now,
-        ),
-      ];
-    case "space_moved":
-    case "goal_funded":
-      return [];
-  }
-}
+const NOT_SIGNED_IN: SandboxError = {
+  code: "not_signed_in",
+  message: "Your session has ended. Please sign in again.",
+};
 
-export interface SandboxProviderProps {
-  children: ReactNode;
-  /** Inject state directly (tests) — skips storage load. */
-  initialState?: SandboxState;
-  /** Override storage (tests) — defaults to browser localStorage. */
-  storage?: StorageLike;
-}
+const ACCOUNT_UNAVAILABLE: SandboxError = {
+  code: "account_unavailable",
+  message: "This account isn't available. Please sign in again.",
+};
 
-export function SandboxProvider({ children, initialState, storage }: SandboxProviderProps) {
-  const [state, setState] = useState<SandboxState>(
-    () => initialState ?? createSeedState(new Date()),
+export function SandboxProvider({
+  children,
+  viewerId: initialViewerId,
+  repository: providedRepository,
+}: {
+  children: React.ReactNode;
+  /**
+   * Without an AuthProvider (isolated tests), the account to view as.
+   * Defaults to the seed teen. Ignored when an AuthProvider exists.
+   */
+  viewerId?: string;
+  repository?: SandboxRepository;
+}) {
+  const auth = useOptionalAuth();
+  const [repository] = useState<SandboxRepository>(
+    () => providedRepository ?? createLocalRepository(),
   );
-  const [ready, setReady] = useState(initialState !== undefined);
-  const [storageIssue, setStorageIssue] = useState<StorageIssue | null>(null);
-  const stateRef = useRef(state);
 
-  // Hydrate from storage after mount so the server render stays
-  // deterministic and mismatch-free (same pattern as ThemeProvider).
+  // SSR and the first client render use the deterministic seed
+  // (hydration-safe). Stored data is applied after mount.
+  const [db, setDb] = useState<SandboxDatabase>(buildSeedDatabase);
+  const [ready, setReady] = useState(false);
+  const [storageStatus, setStorageStatus] = useState<StorageStatus>("loading");
+  const [storageNotice, setStorageNotice] = useState<string | null>(null);
+  const [localViewer, setLocalViewer] = useState(initialViewerId ?? SEED_TEEN_ID);
+
+  const viewerId: string | null = auth
+    ? auth.status === "authenticated" && auth.session
+      ? auth.session.accountId
+      : null
+    : localViewer;
+
+  // Latest values, including changes made earlier in the same tick —
+  // so a double click sees the first click's result.
+  const dbRef = useRef(db);
+  dbRef.current = db;
+  const viewerRef = useRef(viewerId);
+  viewerRef.current = viewerId;
+  const authRef = useRef(auth);
+  authRef.current = auth;
+
+  const commit = useCallback((next: SandboxDatabase) => {
+    if (next === dbRef.current) return;
+    dbRef.current = next;
+    setDb(next);
+  }, []);
+
+  // Load once.
   useEffect(() => {
-    if (initialState !== undefined) return;
-    const { state: persisted, issue } = loadPersistedState(storage);
-    if (persisted) {
-      stateRef.current = persisted;
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setState(persisted);
-    }
-    setStorageIssue(issue);
+    const { db: loaded, outcome } = repository.load();
+    dbRef.current = loaded;
+    setDb(loaded);
     setReady(true);
-  }, [initialState, storage]);
+    setStorageStatus(outcome.kind === "unavailable" ? "unavailable" : "ready");
+    setStorageNotice(describeLoadOutcome(outcome));
+  }, [repository]);
 
-  const commit = useCallback(
-    (updater: (prev: SandboxState) => SandboxState) => {
-      const next: SandboxState = {
-        ...updater(stateRef.current),
-        updatedAt: new Date().toISOString(),
-      };
-      stateRef.current = next;
-      setState(next);
-      setStorageIssue(savePersistedState(next, storage) ? null : "unavailable");
-    },
-    [storage],
+  // Save on every change after loading.
+  useEffect(() => {
+    if (!ready || storageStatus === "unavailable") return;
+    if (!repository.save(db)) setStorageStatus("unavailable");
+  }, [db, ready, storageStatus, repository]);
+
+  // Record sign-in / sign-out / expiry as account security events.
+  const subscribe = auth?.subscribe;
+  useEffect(() => {
+    if (!subscribe) return;
+    return subscribe((event: AuthEvent) => {
+      commit(
+        recordSecurityEvent(dbRef.current, event.accountId, event.type, event.at, event.sessionId),
+      );
+    });
+  }, [subscribe, commit]);
+
+  const scope = useMemo(
+    () => (viewerId ? scopeFor(db, viewerId) : null),
+    [db, viewerId],
   );
 
-  const applyOutcome = useCallback(
-    (outcome: PostOutcome, now: string): ActionResult => {
-      if (!outcome.ok) return { ok: false, error: outcome.error.message };
-      if (!outcome.replayed) {
-        const notifications = outcome.events.flatMap((event) =>
-          notificationsForEvent(event, now),
-        );
-        commit((prev) => ({
-          ...prev,
-          entries: [...prev.entries, ...outcome.entries],
-          notifications: [...prev.notifications, ...notifications],
-        }));
+  // A session pointing at an account that's gone or closed ends —
+  // it never falls back to someone else's data.
+  const signOut = auth?.signOut;
+  useEffect(() => {
+    if (ready && signOut && viewerId && !scope) signOut("account_unavailable");
+  }, [ready, signOut, viewerId, scope]);
+
+  const actions = useMemo<SandboxActions>(() => {
+    /**
+     * Runs a pure transition on the acting account's scope and merges
+     * the result back. Unexpected errors become a friendly message —
+     * nothing half-applied, no internals shown.
+     */
+    function dispatch<T>(
+      transition: (current: SandboxState) => TransitionOutput<T>,
+      options: { familyId?: string } = {},
+    ): SandboxResult<T> {
+      const actor = viewerRef.current;
+      if (!actor) return { ok: false, error: NOT_SIGNED_IN };
+      const current = scopeFor(dbRef.current, actor, options);
+      if (!current) return { ok: false, error: ACCOUNT_UNAVAILABLE };
+      let output: TransitionOutput<T>;
+      try {
+        output = transition(current.state);
+      } catch {
+        return { ok: false, error: SOMETHING_WENT_WRONG };
       }
-      return { ok: true };
-    },
-    [commit],
-  );
+      if (output.result.ok && output.state !== current.state) {
+        // All-or-nothing: if the merge refuses (e.g. an attempt to
+        // rewrite history), nothing is written and no success shown.
+        let merged: SandboxDatabase;
+        try {
+          merged = mergeScope(dbRef.current, current.info, current.state, output.state);
+        } catch {
+          return { ok: false, error: SOMETHING_WENT_WRONG };
+        }
+        commit(merged);
+      }
+      return output.result;
+    }
 
-  const sendPayment = useCallback(
-    (input: SendPaymentInput): ActionResult => {
-      const prev = stateRef.current;
-      if (!input.recipient.parentApproved) {
+    /**
+     * Runs a database-level peer transition as the acting account.
+     * TeenPay transfers cross families, so they can't run inside one
+     * family scope; the engine authorizes the actor itself (and posts
+     * through the one ledger write path). Same guarantees as
+     * `dispatch`: signed in, active account, all-or-nothing.
+     */
+    function dispatchDb<T>(
+      transition: (current: SandboxDatabase, actorId: string, at: string) => PeerOutput<T>,
+    ): SandboxResult<T> {
+      const actor = viewerRef.current;
+      if (!actor) return { ok: false, error: NOT_SIGNED_IN };
+      if (!scopeFor(dbRef.current, actor)) return { ok: false, error: ACCOUNT_UNAVAILABLE };
+      let output: PeerOutput<T>;
+      try {
+        output = transition(dbRef.current, actor, new Date().toISOString());
+      } catch {
+        return { ok: false, error: SOMETHING_WENT_WRONG };
+      }
+      if (output.result.ok) commit(output.db);
+      return output.result;
+    }
+
+    /**
+     * Read-only, as the acting account: same "signed in, active" gate
+     * as writes, so a stale screen can't read through a dead session.
+     */
+    function readDb<T>(read: (current: SandboxDatabase, actorId: string) => SandboxResult<T>): SandboxResult<T> {
+      const actor = viewerRef.current;
+      if (!actor) return { ok: false, error: NOT_SIGNED_IN };
+      if (!scopeFor(dbRef.current, actor)) return { ok: false, error: ACCOUNT_UNAVAILABLE };
+      try {
+        return read(dbRef.current, actor);
+      } catch {
+        return { ok: false, error: SOMETHING_WENT_WRONG };
+      }
+    }
+
+    /** QR → recipient → the existing flow's URL (preselected, not sent). */
+    function startFromQr(payload: string, path: "/send" | "/request") {
+      return readDb((db, actorId) => {
+        const resolved = resolveQrRecipient(db, actorId, payload);
+        if (!resolved.ok) return resolved;
+        const handle = resolved.value.handle.replace(/^@/, "");
         return {
-          ok: false,
-          error: `${input.recipient.name} needs parent approval before you can pay them.`,
+          ok: true as const,
+          value: { recipient: resolved.value, href: `${path}?to=${encodeURIComponent(handle)}&via=qr` },
         };
-      }
-      const outcome = postPayment(prev.entries, {
-        walletId: prev.walletId,
-        recipientName: input.recipient.name,
-        recipientId: input.recipient.id,
-        recipientKind: input.recipient.kind,
-        handle: input.recipient.handle,
-        amountPaise: input.amountPaise,
-        note: input.note,
-        idempotencyKey: input.idempotencyKey ?? newOperationKey(),
-        now: new Date().toISOString(),
       });
-      return applyOutcome(outcome, new Date().toISOString());
-    },
-    [applyOutcome],
-  );
+    }
 
-  const createRequest = useCallback(
-    (input: CreateRequestInput): ActionResult<{ request: MoneyRequest }> => {
-      const amount = validateTransferPaise(input.amountPaise);
-      if (!amount.ok) return { ok: false, error: amount.error };
-      const now = new Date().toISOString();
-      const request: MoneyRequest = {
-        id: uid("req"),
-        requesterId: stateRef.current.teenId,
-        targetName: input.targetName,
-        targetHandle: input.targetHandle,
-        targetKind: input.targetKind,
-        amountPaise: amount.paise,
-        note: input.note?.trim() ? input.note.trim() : undefined,
-        status: "pending",
-        createdAt: now,
-      };
-      const notification = buildNotification(
-        {
-          kind: "request_created",
-          title: `Requested ${formatINR(request.amountPaise)}`,
-          body: `From ${request.targetName}${request.note ? ` · ${request.note}` : ""}`,
-          href: "/activity",
-        },
-        now,
-      );
-      commit((prev) => ({
-        ...prev,
-        requests: [...prev.requests, request],
-        notifications: [...prev.notifications, notification],
-      }));
-      return { ok: true, request };
-    },
-    [commit],
-  );
+    function update(fn: (current: SandboxState) => SandboxState): void {
+      dispatch((s) => {
+        const next = fn(s);
+        return { state: next, result: { ok: true, value: undefined } };
+      });
+    }
 
-  const cancelRequest = useCallback(
-    (requestId: string): ActionResult => {
-      const prev = stateRef.current;
-      const request = prev.requests.find((r) => r.id === requestId);
-      if (!request || request.status !== "pending") {
-        return { ok: false, error: "This request is no longer pending." };
-      }
-      const now = new Date().toISOString();
-      commit((prevState) => ({
-        ...prevState,
-        requests: prevState.requests.map((r) =>
-          r.id === requestId ? { ...r, status: "cancelled" as const, decidedAt: now } : r,
+    return {
+      pay: (input) =>
+        dispatch((s) =>
+          payTransition(s, {
+            entryId: input.idempotencyId ?? makeId("pay"),
+            recipientId: input.recipientId,
+            amount: input.amount,
+            note: input.note,
+          }),
         ),
-      }));
-      return { ok: true };
-    },
-    [commit],
-  );
-
-  const fulfillRequest = useCallback(
-    (requestId: string): ActionResult => {
-      const prev = stateRef.current;
-      const request = prev.requests.find((r) => r.id === requestId);
-      if (!request || request.status !== "pending") {
-        return { ok: false, error: "This request is no longer pending." };
-      }
-      const now = new Date().toISOString();
-      const parentName = mockHousehold.parents[0]?.displayName ?? "Parent";
-      const outcome = postAllowance(prev.entries, {
-        walletId: prev.walletId,
-        parentName,
-        amountPaise: request.amountPaise,
-        note: request.note,
-        requestId: request.id,
-        idempotencyKey: newOperationKey(),
-        now,
-      });
-      if (!outcome.ok) return { ok: false, error: outcome.error.message };
-      const paidEntryId = outcome.entries[0]?.id;
-      const notifications = outcome.events.flatMap((event) =>
-        notificationsForEvent(event, now),
-      );
-      commit((prevState) => ({
-        ...prevState,
-        entries: [...prevState.entries, ...outcome.entries],
-        requests: prevState.requests.map((r) =>
-          r.id === requestId
-            ? { ...r, status: "paid" as const, decidedAt: now, paidEntryId }
-            : r,
+      createRequest: (input) =>
+        dispatch((s) =>
+          createRequestTransition(s, {
+            requestId: input.idempotencyId ?? makeId("req"),
+            recipientId: input.recipientId,
+            amount: input.amount,
+            note: input.note,
+          }),
         ),
-        notifications: [...prevState.notifications, ...notifications],
-      }));
-      return { ok: true };
-    },
-    [commit],
-  );
-
-  const sendAllowance = useCallback(
-    (input: AllowanceInput): ActionResult => {
-      const prev = stateRef.current;
-      const now = new Date().toISOString();
-      const parentName = mockHousehold.parents[0]?.displayName ?? "Parent";
-      const outcome = postAllowance(prev.entries, {
-        walletId: prev.walletId,
-        parentName,
-        amountPaise: input.amountPaise,
-        note: input.note,
-        idempotencyKey: input.idempotencyKey ?? newOperationKey(),
-        now,
-      });
-      return applyOutcome(outcome, now);
-    },
-    [applyOutcome],
-  );
-
-  const moveBetweenSpaces = useCallback(
-    (input: SpaceMoveActionInput): ActionResult => {
-      const prev = stateRef.current;
-      const outcome = postSpaceMove(prev.entries, {
-        walletId: prev.walletId,
-        fromSpace: input.fromSpace,
-        toSpace: input.toSpace,
-        amountPaise: input.amountPaise,
-        idempotencyKey: input.idempotencyKey ?? newOperationKey(),
-        now: new Date().toISOString(),
-      });
-      if (!outcome.ok) return { ok: false, error: outcome.error.message };
-      if (!outcome.replayed) {
-        commit((prevState) => ({
-          ...prevState,
-          entries: [...prevState.entries, ...outcome.entries],
-        }));
-      }
-      return { ok: true };
-    },
-    [commit],
-  );
-
-  const contributeToGoal = useCallback(
-    (input: GoalContributionActionInput): ActionResult => {
-      const prev = stateRef.current;
-      const blueprint = goalBlueprints.find((g) => g.id === input.goalId);
-      if (!blueprint) {
-        return { ok: false, error: "This goal no longer exists." };
-      }
-      const now = new Date().toISOString();
-      const outcome = postGoalContribution(prev.entries, {
-        walletId: prev.walletId,
-        goalId: blueprint.id,
-        goalName: blueprint.name,
-        fromSpace: input.fromSpace,
-        amountPaise: input.amountPaise,
-        idempotencyKey: input.idempotencyKey ?? newOperationKey(),
-        now,
-      });
-      if (!outcome.ok) return { ok: false, error: outcome.error.message };
-      if (!outcome.replayed) {
-        const wasComplete = isGoalComplete(
-          deriveGoals(prev.entries, [blueprint])[0],
+      respondToRequest: (requestId, response) =>
+        dispatch((s) => respondRequestTransition(s, { requestId, response })),
+      sendAllowance: (input) => {
+        const operationId = input.idempotencyId ?? makeId("allow");
+        return dispatch((s) =>
+          sendAllowanceTransition(s, { operationId, amount: input.amount, note: input.note }),
         );
-        const nextEntries = [...prev.entries, ...outcome.entries];
-        const isComplete = isGoalComplete(deriveGoals(nextEntries, [blueprint])[0]);
-        const milestone =
-          !wasComplete && isComplete
-            ? [
-                buildNotification(
-                  {
-                    kind: "goal_milestone" as const,
-                    title: "Goal reached",
-                    body: `${blueprint.name} · ${formatINR(blueprint.targetPaise)} saved`,
-                    href: "/money",
-                  },
-                  now,
-                ),
-              ]
-            : [];
-        commit((prevState) => ({
-          ...prevState,
-          entries: [...prevState.entries, ...outcome.entries],
-          notifications: [...prevState.notifications, ...milestone],
-        }));
-      }
-      return { ok: true };
-    },
-    [commit],
-  );
-
-  const markNotificationRead = useCallback(
-    (id: string) => {
-      commit((prev) => ({
-        ...prev,
-        notifications: prev.notifications.map((n) =>
-          n.id === id ? { ...n, read: true } : n,
+      },
+      createSpace: ({ idempotencyId, ...input }) =>
+        dispatch((s) =>
+          createSpaceTransition(s, { ...input, spaceId: idempotencyId ?? makeId("spc") }),
         ),
-      }));
-    },
-    [commit],
-  );
+      updateSpace: (spaceId, changes) =>
+        dispatch((s) => updateSpaceTransition(s, { ...changes, spaceId })),
+      archiveSpace: (spaceId, idempotencyId) =>
+        dispatch((s) =>
+          archiveSpaceTransition(s, { spaceId, operationId: idempotencyId ?? makeId("spcop") }),
+        ),
+      addToSpace: (spaceId, amount, idempotencyId) =>
+        dispatch((s) =>
+          moveSpaceMoneyTransition(s, {
+            spaceId,
+            amount,
+            direction: "add",
+            operationId: idempotencyId ?? makeId("spcop"),
+          }),
+        ),
+      withdrawFromSpace: (spaceId, amount, idempotencyId) =>
+        dispatch((s) =>
+          moveSpaceMoneyTransition(s, {
+            spaceId,
+            amount,
+            direction: "withdraw",
+            operationId: idempotencyId ?? makeId("spcop"),
+          }),
+        ),
+      simulateRefund: (entryId) => dispatch((s) => refundTransition(s, { entryId })),
+      setWalletFrozen: (walletId, frozen) =>
+        dispatch((s) =>
+          setWalletStatusTransition(s, { walletId, status: frozen ? "frozen" : "active" }),
+        ),
+      markAllNotificationsRead: () =>
+        update((s) => markAllNotificationsRead(s, s.session.currentUserId)),
+      markNotificationRead: (id) => update((s) => markNotificationRead(s, id)),
 
-  const markAllNotificationsRead = useCallback(() => {
-    commit((prev) => ({
-      ...prev,
-      notifications: prev.notifications.map((n) => ({ ...n, read: true })),
-    }));
+      switchRole: (role) => {
+        const actor = viewerRef.current;
+        if (!actor) return { ok: false, error: NOT_SIGNED_IN };
+        const target = sandboxSwitchTarget(dbRef.current, actor, role);
+        if (!target) {
+          return {
+            ok: false,
+            error: { code: "unknown_user", message: `There's no ${role} account in this sandbox yet.` },
+          };
+        }
+        if (target.id === actor) return { ok: true, value: { userId: actor } };
+        const currentAuth = authRef.current;
+        if (currentAuth) {
+          const result = currentAuth.switchAccount({
+            method: "sandbox",
+            accountId: target.id,
+            role: target.role,
+          });
+          if (!result.ok) {
+            return { ok: false, error: { code: "not_signed_in", message: result.message } };
+          }
+        } else {
+          setLocalViewer(target.id);
+        }
+        viewerRef.current = target.id;
+        return { ok: true, value: { userId: target.id } };
+      },
+
+      createFamilyInvite: () => {
+        const used = inviteCodesInUse(dbRef.current);
+        let code = makeInviteCode();
+        for (let i = 0; i < 20 && used.has(code); i += 1) code = makeInviteCode();
+        return dispatch((s) => createInviteTransition(s, { code }));
+      },
+      cancelFamilyInvite: () => dispatch((s) => cancelInviteTransition(s)),
+      claimFamilyInvite: (code) => {
+        const actor = viewerRef.current;
+        const familyId = familyIdForInviteCode(dbRef.current, code);
+        if (actor && familyId) {
+          const elsewhere = accessMemberships(dbRef.current, actor).some(
+            (m) => m.membership.status === "active" && m.family.id !== familyId,
+          );
+          if (elsewhere) {
+            return {
+              ok: false,
+              error: {
+                code: "invalid_transition",
+                message:
+                  "This sandbox supports one family per parent account for now. Disconnect first, or use another parent account.",
+              },
+            };
+          }
+        }
+        return dispatch((s) => claimInviteTransition(s, { code }), familyId ? { familyId } : {});
+      },
+      releaseFamilyInvite: (teenId) => dispatch((s) => releaseInviteTransition(s, { teenId })),
+      acceptFamilyInvite: (teenId) => dispatch((s) => acceptInviteTransition(s, { teenId })),
+      disconnectFamily: (teenId) => dispatch((s) => disconnectTransition(s, { teenId })),
+
+      updateSpendingRules: (input) => dispatch((s) => updateSpendingRulesTransition(s, input)),
+      updateGuardianNotifications: (input) =>
+        dispatch((s) => updateGuardianNotificationsTransition(s, input)),
+
+      createPocketMoneySchedule: ({ idempotencyId, ...input }) => {
+        const scheduleId = idempotencyId ?? makeId("pms");
+        return dispatch((s) => createPocketMoneyScheduleTransition(s, { ...input, scheduleId }));
+      },
+      updatePocketMoneySchedule: (input) =>
+        dispatch((s) => updatePocketMoneyScheduleTransition(s, input)),
+      pausePocketMoneySchedule: (scheduleId, expectedVersion) =>
+        dispatch((s) => pausePocketMoneyScheduleTransition(s, { scheduleId, expectedVersion })),
+      resumePocketMoneySchedule: (scheduleId, expectedVersion) =>
+        dispatch((s) => resumePocketMoneyScheduleTransition(s, { scheduleId, expectedVersion })),
+      cancelPocketMoneySchedule: (scheduleId, expectedVersion) =>
+        dispatch((s) => cancelPocketMoneyScheduleTransition(s, { scheduleId, expectedVersion })),
+      executeDuePocketMoney: (input = {}) =>
+        dispatch((s) => executeDuePocketMoneyTransition(s, input)),
+
+      sendMoney: (input) =>
+        dispatchDb((db, actorId, at) => sendMoneyTransition(db, { ...input, actorId, at })),
+      createMoneyRequest: (input) =>
+        dispatchDb((db, actorId, at) => createMoneyRequestTransition(db, { ...input, actorId, at })),
+      acceptMoneyRequest: (requestId) =>
+        dispatchDb((db, actorId, at) => acceptMoneyRequestTransition(db, { actorId, at, requestId })),
+      declineMoneyRequest: (requestId) =>
+        dispatchDb((db, actorId, at) => declineMoneyRequestTransition(db, { actorId, at, requestId })),
+      cancelMoneyRequest: (requestId) =>
+        dispatchDb((db, actorId, at) => cancelMoneyRequestTransition(db, { actorId, at, requestId })),
+      expireMoneyRequests: () =>
+        dispatchDb((db, actorId, at) => expireMoneyRequestsTransition(db, { actorId, at })),
+
+      addContact: (teenPayId, idempotencyKey) => {
+        const contactId = idempotencyKey ?? makeId("ctc");
+        return dispatchDb((db, actorId, at) => addContactTransition(db, { actorId, at, teenPayId, contactId }));
+      },
+      removeContact: (teenPayId) =>
+        dispatchDb((db, actorId, at) => removeContactTransition(db, { actorId, at, teenPayId })),
+      resolveQrIdentity: (payload) => readDb((db, actorId) => resolveQrRecipient(db, actorId, payload)),
+      createQrPayload: () => readDb((db, actorId) => qrIdentityFor(db, actorId)),
+      startQrPayment: (payload) => startFromQr(payload, "/send"),
+      startQrRequest: (payload) => startFromQr(payload, "/request"),
+
+      coachReport: (period) =>
+        readDb((db, actorId) => coachReportFor(db, actorId, period, new Date().toISOString())),
+
+      missionBoard: () => readDb((db, actorId) => missionBoardFor(db, actorId)),
+      missionDetail: (missionId) => readDb((db, actorId) => missionDetailFor(db, actorId, missionId)),
+      startMission: (missionId) =>
+        dispatchDb((db, actorId, at) => startMissionTransition(db, { actorId, at, missionId })),
+      advanceMission: (missionId, stepId, answer) =>
+        dispatchDb((db, actorId, at) =>
+          advanceMissionTransition(db, { actorId, at, missionId, stepId, ...(answer !== undefined ? { answer } : {}) }),
+        ),
+
+      decideApproval: (approvalId, decision) => {
+        // Approving a TeenPay transfer executes across families, so it
+        // runs in the peer engine (which re-checks everything). Declines
+        // move nothing and stay on the family path.
+        const actor = viewerRef.current;
+        const approval = actor
+          ? scopeFor(dbRef.current, actor)?.state.approvals.find((a) => a.id === approvalId)
+          : undefined;
+        if (approval?.kind === "transfer" && decision === "approve") {
+          return dispatchDb((db, actorId, at) => approveTransferTransition(db, { actorId, at, approvalId }));
+        }
+        return dispatch((s) => decideApprovalTransition(s, { approvalId, decision }));
+      },
+      cancelApproval: (approvalId) => dispatch((s) => cancelApprovalTransition(s, { approvalId })),
+
+      resetSandbox: () => resetRef.current(),
+    };
+    // Actions are stable by design: they read the latest values via refs.
   }, [commit]);
 
-  const resetSandbox = useCallback(() => {
-    clearPersistedState(storage);
-    const fresh = createSeedState(new Date());
-    stateRef.current = fresh;
-    setState(fresh);
-    setStorageIssue(null);
-    setReady(true);
-  }, [storage]);
+  const reset = useCallback(() => {
+    // Sign out first so its security event lands in the old data,
+    // then replace everything with the deterministic seed.
+    authRef.current?.signOut("reset");
+    const seed = repository.reset();
+    dbRef.current = seed;
+    setDb(seed);
+    setStorageStatus("ready");
+    setStorageNotice(null);
+    if (!authRef.current) {
+      setLocalViewer(initialViewerId ?? SEED_TEEN_ID);
+      viewerRef.current = initialViewerId ?? SEED_TEEN_ID;
+    }
+  }, [repository, initialViewerId]);
+  const resetRef = useRef(reset);
+  resetRef.current = reset;
 
-  const wallet = useMemo(
-    () => deriveWallet(state.entries, state.requests, { teenId: state.teenId }),
-    [state],
-  );
-  const transactions = useMemo(
-    () => projectTransactions(state.entries, state.requests),
-    [state],
-  );
-  const goals = useMemo(() => deriveGoals(state.entries, goalBlueprints), [state]);
-  const requests = useMemo(
-    () =>
-      [...state.requests]
-        .map((request, index) => ({ request, index }))
-        .sort(
-          (a, b) =>
-            b.request.createdAt.localeCompare(a.request.createdAt) || b.index - a.index,
-        )
-        .map(({ request }) => request),
-    [state],
-  );
-  const pendingRequests = useMemo(
-    () => requests.filter((r) => r.status === "pending"),
-    [requests],
-  );
-  const notifications = useMemo(
-    () =>
-      [...state.notifications]
-        .map((notification, index) => ({ notification, index }))
-        .sort(
-          (a, b) =>
-            b.notification.createdAt.localeCompare(a.notification.createdAt) ||
-            b.index - a.index,
-        )
-        .map(({ notification }) => notification),
-    [state],
-  );
-  const unreadCount = useMemo(
-    () => notifications.filter((n) => !n.read).length,
-    [notifications],
-  );
-
-  const value = useMemo<SandboxContextValue>(
-    () => ({
+  const dataValue = useMemo<SandboxDataValue>(() => {
+    const now = () => new Date().toISOString();
+    return {
       ready,
-      storageIssue,
-      teen: mockTeen,
-      parent: mockHousehold.parents[0],
-      household: mockHousehold,
-      recipients: mockRecipients,
-      merchants: mockMerchants,
-      wallet,
-      transactions,
-      goals,
-      requests,
-      pendingRequests,
-      notifications,
-      unreadCount,
-      sendPayment,
-      createRequest,
-      cancelRequest,
-      fulfillRequest,
-      sendAllowance,
-      moveBetweenSpaces,
-      contributeToGoal,
-      markNotificationRead,
-      markAllNotificationsRead,
-      resetSandbox,
-    }),
-    [
-      ready,
-      storageIssue,
-      wallet,
-      transactions,
-      goals,
-      requests,
-      pendingRequests,
-      notifications,
-      unreadCount,
-      sendPayment,
-      createRequest,
-      cancelRequest,
-      fulfillRequest,
-      sendAllowance,
-      moveBetweenSpaces,
-      contributeToGoal,
-      markNotificationRead,
-      markAllNotificationsRead,
-      resetSandbox,
-    ],
-  );
+      storageStatus,
+      storageNotice,
+      dismissStorageNotice: () => setStorageNotice(null),
+      directory: db.accounts.filter((a) => a.status === "active"),
+      findAccount: (accountId) => findAccount(dbRef.current, accountId),
+      accountProfile: (accountId) => accountProfile(dbRef.current, accountId),
+      checkUsername: (raw) => checkUsernameAvailability(dbRef.current, raw),
+      createAccount: (input) => {
+        let result: ReturnType<typeof createAccount>;
+        try {
+          result = createAccount(dbRef.current, input, now());
+        } catch {
+          return { ok: false, error: SOMETHING_WENT_WRONG };
+        }
+        if ("code" in result) return { ok: false, error: result };
+        commit(result.db);
+        return { ok: true, value: { account: result.account } };
+      },
+      requestAccountDeletion: (accountId) => {
+        const result = requestAccountDeletion(dbRef.current, accountId, now());
+        if ("code" in result) return { ok: false, error: result };
+        commit(result);
+        return { ok: true, value: undefined };
+      },
+      cancelAccountDeletion: (accountId) =>
+        commit(cancelAccountDeletion(dbRef.current, accountId, now())),
+      securityEvents: (accountId) => securityEventsFor(db, accountId),
+      resetSandbox: reset,
+    };
+  }, [db, ready, storageStatus, storageNotice, commit, reset]);
 
-  return <SandboxContext.Provider value={value}>{children}</SandboxContext.Provider>;
+  const value = useMemo<SandboxContextValue | null>(() => {
+    if (!scope || !viewerId) return null;
+    const viewer = scope.state.users.find((u) => u.id === viewerId);
+    if (!viewer) return null;
+    return {
+      state: scope.state,
+      storageStatus,
+      actions,
+      viewer,
+      scope: scope.info,
+      switchTargets: {
+        teen: sandboxSwitchTarget(db, viewerId, "teen"),
+        parent: sandboxSwitchTarget(db, viewerId, "parent"),
+      },
+      peers: {
+        search: (query) => searchPeers(db, viewerId, query),
+        lookup: (teenPayId) => lookupPeer(db, viewerId, teenPayId),
+      },
+      qr: (() => {
+        const identity = qrIdentityFor(db, viewerId);
+        return identity.ok ? identity.value : null;
+      })(),
+      contacts: {
+        list: selectContactViews(db, viewerId),
+        isFavourite: (teenPayId) => isFavourite(db, viewerId, teenPayId),
+        lookup: (teenPayId) => lookupContact(db, viewerId, teenPayId),
+      },
+    };
+  }, [scope, viewerId, storageStatus, actions, db]);
+
+  return (
+    <SandboxDataContext.Provider value={dataValue}>
+      <SandboxContext.Provider value={value}>{children}</SandboxContext.Provider>
+    </SandboxDataContext.Provider>
+  );
 }
 
+/** Account-level sandbox data; available signed in or out. */
+export function useSandboxData(): SandboxDataValue {
+  const context = useContext(SandboxDataContext);
+  if (!context) throw new Error("useSandboxData must be used within a SandboxProvider");
+  return context;
+}
+
+/**
+ * The signed-in account's view. Only use below the auth gate — it
+ * throws when there's no active session.
+ */
 export function useSandbox(): SandboxContextValue {
-  const ctx = useContext(SandboxContext);
-  if (!ctx) throw new Error("useSandbox must be used inside <SandboxProvider>");
-  return ctx;
+  const context = useContext(SandboxContext);
+  if (!context) {
+    throw new Error("useSandbox needs a SandboxProvider and a signed-in account");
+  }
+  return context;
+}
+
+/**
+ * For app chrome that may render without a session: null instead of
+ * throwing.
+ */
+export function useOptionalSandbox(): SandboxContextValue | null {
+  return useContext(SandboxContext);
 }

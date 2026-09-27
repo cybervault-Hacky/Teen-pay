@@ -1,0 +1,400 @@
+"use client";
+
+import { Check, Hourglass, QrCode, ShieldCheck, Star, UserRound } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+
+import { PEER_NOTE_MAX, PEER_REQUEST_TTL_DAYS, type PeerProfile } from "@/domain";
+import { makeId } from "@/lib/ids";
+import { formatINR } from "@/lib/currency";
+import { formatFullDateTime } from "@/lib/format";
+import { amountError } from "@/sandbox/engine";
+import { MAX_SANDBOX_AMOUNT } from "@/sandbox/types";
+import { evaluateTransfer } from "@/sandbox/rules";
+import { selectSendableBalance, selectTeenWallet } from "@/sandbox/selectors";
+import { findUser } from "@/sandbox/identity";
+import { useSandbox } from "@/sandbox/store";
+import { FrozenBanner } from "@/components/wallet/frozen-banner";
+import { AmountDisplay } from "@/components/ui/amount";
+import { Avatar } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { FlowTransition } from "@/components/motion/flow-transition";
+import { AmountInput } from "@/components/pay/amount-input";
+import { PeerSearch } from "./peer-search";
+
+export type PeerMode = "send" | "request";
+/** Where a preselected recipient came from — display only, never authority. */
+export type PeerOrigin = "qr" | "favourite";
+type Step = "recipient" | "amount" | "review" | "done";
+
+/** What the engine confirmed — the success screen shows only this. */
+type Receipt =
+  | { kind: "sent"; amount: number; party: PeerProfile; reference: string; at: string }
+  | { kind: "approval"; amount: number; party: PeerProfile; guardianName: string }
+  | { kind: "requested"; amount: number; party: PeerProfile; note?: string; expiresAt: string };
+
+/**
+ * TeenPay-to-TeenPay: recipient → amount → review → done.
+ *
+ * - The idempotency key is created once, when review opens. Double
+ *   clicks, retries and stale re-submits reuse it, so the engine can
+ *   never post twice; going back and changing anything gets a new key.
+ * - Amount guidance is the engine's own decision (`evaluateTransfer`),
+ *   so the screen never re-implements a rule; the engine checks again
+ *   on confirm.
+ * - Success is shown only from the engine's result.
+ * - Phase 9: a QR scan or a favourite can preselect the recipient
+ *   (`initialRecipient`, a TeenPay ID). It's resolved through the live
+ *   directory on every render — never trusted as-is — and the person
+ *   still enters the amount, reviews and confirms. If the preselected
+ *   person isn't available (closed, gone, stale favourite), the flow
+ *   says so and falls back to search; nothing can be sent to them.
+ */
+export function PeerFlow({
+  mode,
+  initialRecipient = null,
+  origin = null,
+}: {
+  mode: PeerMode;
+  initialRecipient?: string | null;
+  origin?: PeerOrigin | null;
+}) {
+  const { state, actions, viewer, peers } = useSandbox();
+
+  const [step, setStep] = useState<Step>(initialRecipient ? "amount" : "recipient");
+  const [picked, setPicked] = useState<PeerProfile | null>(null);
+  // The preselection applies until the person picks someone else.
+  const [presetActive, setPresetActive] = useState(Boolean(initialRecipient));
+  const presetProfile = presetActive && initialRecipient ? peers.lookup(initialRecipient) : null;
+  const party = picked ?? presetProfile;
+  const presetUnavailable = presetActive && !picked && !presetProfile && step !== "done";
+  const shownStep: Step = presetUnavailable ? "recipient" : step;
+  const [digits, setDigits] = useState("");
+  const [note, setNote] = useState("");
+  const [key, setKey] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<Receipt | null>(null);
+
+  const sendable = selectSendableBalance(state);
+  const amount = digits ? Number(digits) : 0;
+  const wallet = selectTeenWallet(state);
+  const paused = mode === "send" && wallet !== null && wallet.status !== "active";
+
+  const decision =
+    mode === "send" && digits !== ""
+      ? evaluateTransfer(state, { teenId: viewer.id, amount, at: new Date().toISOString() })
+      : null;
+  const needsApproval = decision?.kind === "needs_approval";
+  const approverName = decision?.kind === "needs_approval" ? decision.guardian.displayName : "your parent";
+
+  const amountMessage = (() => {
+    if (digits === "") return "Enter an amount.";
+    const invalid = amountError(amount);
+    if (invalid) return invalid.message;
+    if (decision?.kind === "rejected") return decision.error.message;
+    return null;
+  })();
+
+  useEffect(() => {
+    setActionError(null);
+  }, [step]);
+
+  const enterReview = () => {
+    setKey(makeId(mode === "send" ? "snd" : "prq"));
+    setStep("review");
+  };
+
+  const confirm = () => {
+    if (!party || !key) return;
+    if (mode === "send") {
+      const result = actions.sendMoney({
+        recipient: party.handle,
+        amount,
+        note: note.trim() || undefined,
+        idempotencyKey: key,
+      });
+      if (!result.ok) return setActionError(result.error.message);
+      const value = result.value;
+      setReceipt(
+        value.status === "completed"
+          ? { kind: "sent", amount: value.amount, party: value.recipient, reference: value.reference, at: value.completedAt }
+          : { kind: "approval", amount: value.amount, party: value.recipient, guardianName: value.guardianName },
+      );
+    } else {
+      const result = actions.createMoneyRequest({
+        payer: party.handle,
+        amount,
+        note: note.trim() || undefined,
+        idempotencyKey: key,
+      });
+      if (!result.ok) return setActionError(result.error.message);
+      setReceipt({
+        kind: "requested",
+        amount: result.value.amount,
+        party: result.value.payer,
+        ...(note.trim() ? { note: note.trim() } : {}),
+        expiresAt: result.value.expiresAt,
+      });
+    }
+    setStep("done");
+  };
+
+  const choose = (profile: PeerProfile) => {
+    setPresetActive(false);
+    setPicked(profile);
+    setStep("amount");
+  };
+
+  const backToRecipient = () => {
+    setPresetActive(false);
+    setPicked(null);
+    setStep("recipient");
+  };
+
+  const restart = () => {
+    setPresetActive(false);
+    setStep("recipient");
+    setPicked(null);
+    setDigits("");
+    setNote("");
+    setKey(null);
+    setReceipt(null);
+  };
+
+  return (
+    <div>
+      {paused && wallet && shownStep !== "done" && (
+        <div className="mb-5">
+          <FrozenBanner
+            wallet={wallet}
+            ownerName="Your"
+            frozenByName={
+              wallet.statusChangedBy && wallet.statusChangedBy !== viewer.id
+                ? findUser(state, wallet.statusChangedBy)?.displayName
+                : undefined
+            }
+            href="/money"
+          />
+        </div>
+      )}
+      <FlowTransition step={shownStep}>
+        {shownStep === "recipient" && (
+          <div>
+            {presetUnavailable && (
+              <p
+                role="alert"
+                className="mb-4 flex items-start gap-2 rounded-xl bg-surface-2 px-3.5 py-2.5 text-sm text-ink-muted"
+              >
+                <UserRound className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" aria-hidden />
+                <span>No TeenPay user found. Nothing was sent — choose someone else.</span>
+              </p>
+            )}
+            <PeerSearch
+              question={mode === "send" ? "Who are you sending to?" : "Who are you asking?"}
+              onSelect={choose}
+            />
+          </div>
+        )}
+
+        {shownStep === "amount" && party && (
+          <div>
+            <StepHeading title={mode === "send" ? `Send to ${party.handle}` : `Request from ${party.handle}`} />
+            {presetActive && !picked && origin && (
+              <p className="-mt-2 mb-4 flex items-center gap-1.5 text-xs text-ink-muted">
+                {origin === "qr" ? (
+                  <QrCode className="h-3.5 w-3.5" aria-hidden />
+                ) : (
+                  <Star className="h-3.5 w-3.5" aria-hidden />
+                )}
+                {party.name} · {origin === "qr" ? "from a TeenPay QR" : "from your favourites"}
+              </p>
+            )}
+            <AmountInput
+              label="Amount"
+              value={digits}
+              onChange={setDigits}
+              error={digits === "" ? null : amountMessage}
+              hint={
+                mode === "send"
+                  ? `Available ${formatINR(sendable)} · sandbox cap ${formatINR(MAX_SANDBOX_AMOUNT)}`
+                  : `Sandbox cap ${formatINR(MAX_SANDBOX_AMOUNT)}`
+              }
+            />
+            {needsApproval && amountMessage === null && (
+              <p
+                role="status"
+                className="mt-3 flex items-start gap-2 rounded-xl bg-surface-2 px-3.5 py-2.5 text-sm text-ink-muted"
+              >
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-accent" aria-hidden />
+                <span>
+                  This needs parent approval. {approverName} will be asked before anything is sent.
+                </span>
+              </p>
+            )}
+            <Input
+              className="mt-4"
+              label="Note (optional)"
+              placeholder={mode === "send" ? "What is it for?" : "What is this for?"}
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              maxLength={PEER_NOTE_MAX}
+            />
+            <div className="mt-5 flex gap-2.5">
+              <Button variant="secondary" className="flex-1" onClick={backToRecipient}>
+                {presetActive && !picked ? "Change" : "Back"}
+              </Button>
+              <Button className="flex-1" disabled={amountMessage !== null} onClick={enterReview}>
+                Continue
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {shownStep === "review" && party && (
+          <div>
+            <StepHeading
+              title={mode === "send" ? `Send ${formatINR(amount)}` : `Request ${formatINR(amount)}`}
+            />
+            <Card className="p-5">
+              <dl className="space-y-4">
+                <div>
+                  <dt className="text-xs font-semibold uppercase tracking-[0.1em] text-ink-faint">
+                    {mode === "send" ? "To" : "From"}
+                  </dt>
+                  <dd className="mt-2 flex items-center gap-3.5">
+                    <Avatar name={party.name} initials={party.initials} size="md" />
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium text-ink">{party.handle}</span>
+                      <span className="block truncate text-xs text-ink-muted">{party.name}</span>
+                    </span>
+                  </dd>
+                </div>
+                <div className="border-t border-line pt-4">
+                  <dt className="sr-only">Amount</dt>
+                  <dd>
+                    <AmountDisplay value={amount} size="lg" />
+                    {note.trim() && <p className="mt-1 text-sm text-ink-muted">“{note.trim()}”</p>}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="sr-only">{mode === "send" ? "Paid from" : "What happens"}</dt>
+                  <dd className="text-sm text-ink-muted">
+                    {mode === "send"
+                      ? "From your available balance"
+                      : `Nothing moves until ${party.handle} pays. Requests expire after ${PEER_REQUEST_TTL_DAYS} days.`}
+                  </dd>
+                </div>
+              </dl>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Badge tone="warning">{mode === "send" ? "Sandbox transfer" : "Sandbox request"}</Badge>
+                {needsApproval && <Badge tone="accent">Approval required</Badge>}
+              </div>
+              {needsApproval && (
+                <p className="mt-3 text-sm text-ink-muted">
+                  {approverName} will get a request — nothing moves until they approve.
+                </p>
+              )}
+            </Card>
+            {actionError && (
+              <p role="alert" className="mt-3 px-1 text-sm text-danger">
+                {actionError}
+              </p>
+            )}
+            <div className="mt-5 flex gap-2.5">
+              <Button variant="secondary" className="flex-1" onClick={() => setStep("amount")}>
+                Back
+              </Button>
+              <Button className="flex-1" onClick={confirm}>
+                {mode === "request"
+                  ? "Send request"
+                  : needsApproval
+                    ? `Ask ${approverName} to approve`
+                    : `Send ${formatINR(amount)}`}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {shownStep === "done" && receipt && (
+          <div className="flex flex-col items-center px-4 py-10 text-center">
+            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-accent/12 text-accent">
+              {receipt.kind === "approval" ? (
+                <Hourglass className="h-7 w-7" aria-hidden />
+              ) : (
+                <Check className="h-7 w-7" aria-hidden />
+              )}
+            </span>
+            <StepHeading
+              className="mt-5 text-xl font-semibold tracking-tight text-ink outline-none"
+              title={receipt.kind === "sent" ? "Money sent" : receipt.kind === "approval" ? "Waiting for approval" : "Request sent"}
+            />
+            <AmountDisplay value={receipt.amount} size="display" className="mt-2" />
+            <p className="mt-1.5 text-sm text-ink-muted">
+              {receipt.kind === "requested" ? `from ${receipt.party.handle}` : `to ${receipt.party.handle}`}
+              {receipt.kind === "requested" && receipt.note ? ` · “${receipt.note}”` : ""}
+            </p>
+            {receipt.kind === "sent" && (
+              <dl className="mt-4 space-y-1 text-xs text-ink-muted">
+                <div>
+                  <dt className="sr-only">Reference</dt>
+                  <dd className="font-mono">{receipt.reference}</dd>
+                </div>
+                <div>
+                  <dt className="sr-only">Time</dt>
+                  <dd>{formatFullDateTime(receipt.at)}</dd>
+                </div>
+              </dl>
+            )}
+            {receipt.kind === "approval" && (
+              <p className="mt-3 max-w-xs text-sm text-ink-muted">
+                {receipt.guardianName} has been asked. Nothing has been sent yet — you&apos;ll get a
+                notification when they decide.
+              </p>
+            )}
+            {receipt.kind === "requested" && (
+              <p className="mt-3 max-w-xs text-sm text-ink-muted">
+                Nothing has moved. {receipt.party.handle} can pay or decline until{" "}
+                {formatFullDateTime(receipt.expiresAt)}.
+              </p>
+            )}
+            <div className="mt-8 flex w-full max-w-xs gap-2.5">
+              <Button
+                variant="secondary"
+                className="flex-1"
+                href={receipt.kind === "sent" ? "/activity" : receipt.kind === "approval" ? "/family" : "/requests"}
+              >
+                {receipt.kind === "sent" ? "View activity" : receipt.kind === "approval" ? "View family" : "View requests"}
+              </Button>
+              <Button className="flex-1" onClick={restart}>
+                Done
+              </Button>
+            </div>
+          </div>
+        )}
+      </FlowTransition>
+    </div>
+  );
+}
+
+/**
+ * A step heading that takes focus when it mounts — after the step
+ * transition has swapped the content in — so screen readers and
+ * keyboard users land on the new step.
+ */
+function StepHeading({ title, className }: { title: string; className?: string }) {
+  const ref = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
+  return (
+    <h2
+      ref={ref}
+      tabIndex={-1}
+      className={className ?? "mb-4 text-[22px] font-semibold tracking-tight text-ink outline-none"}
+    >
+      {title}
+    </h2>
+  );
+}
