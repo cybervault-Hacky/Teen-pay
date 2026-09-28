@@ -20,6 +20,7 @@ export * from "./request";
 export * from "./peer";
 export * from "./qr";
 export * from "./contact";
+export * from "./friend";
 export * from "./ledger";
 export * from "./safety";
 export * from "./allowance";

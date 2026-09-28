@@ -149,6 +149,6 @@ describe("Missions security audit", () => {
   it("persistence refuses unknown fields in stored progress", () => {
     const persistence = code("sandbox/persistence.ts");
     expect(persistence).toMatch(/function isMissionProgressRecord/);
-    expect(persistence).toMatch(/return missionProgressIntegrity\(value\);/);
+    expect(persistence).toMatch(/return missionProgressIntegrity\(value\) && friendshipIntegrity\(value\);/);
   });
 });

@@ -79,7 +79,7 @@ describe("Coach security audit", () => {
   });
 
   it("/coach is a protected, teen-only route", () => {
-    expect(read("lib/navigation.ts")).toMatch(/"\/coach",\n\] as const;/);
+    expect(read("lib/navigation.ts")).toMatch(/PROTECTED_ROUTES = \[[\s\S]*"\/coach",[\s\S]*\] as const;/);
     expect(read("app/coach/page.tsx")).toMatch(/<RoleGate role="teen">/);
   });
 });

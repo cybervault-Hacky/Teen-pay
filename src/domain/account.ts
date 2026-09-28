@@ -50,6 +50,7 @@ const RESERVED_USERNAMES = new Set([
 export const INTERNAL_ID_PREFIXES = [
   "usr", "wal", "fam", "mem", "rec", "acc", "inv", "ctc", "prq", "p2p", "snd",
   "trf", "apr", "ntf", "evt", "req", "pay", "pms", "spc", "space", "goal", "seed",
+  "frd",
 ] as const;
 
 const INTERNAL_ID_PATTERN = new RegExp(`^(${INTERNAL_ID_PREFIXES.join("|")})_`, "i");

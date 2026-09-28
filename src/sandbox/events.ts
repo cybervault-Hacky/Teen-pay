@@ -241,6 +241,28 @@ function drafts(state: SandboxState, event: DomainEvent): Draft[] {
           body: `${event.requesterHandle} cancelled their ${formatINR(event.amount)} request. No money moved.`,
         },
       ];
+    // Friend Circles: one quiet notice where it's useful — a new
+    // request reaches the recipient, an acceptance the requester.
+    // Declines, cancellations and removals are deliberately silent
+    // (no loops, no pressure). A friendship never moves money.
+    case "friend_request_received":
+      return [
+        {
+          to: event.recipientId,
+          kind: "system",
+          title: "New friend request",
+          body: `${event.requesterHandle} wants to join your Friend Circle.`,
+        },
+      ];
+    case "friend_request_accepted":
+      return [
+        {
+          to: event.requesterId,
+          kind: "system",
+          title: "Friend request accepted",
+          body: `${event.recipientHandle} accepted your request. You're now friends.`,
+        },
+      ];
     case "allowance_sent":
       return [
         {

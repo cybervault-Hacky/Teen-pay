@@ -76,6 +76,8 @@ export const PROTECTED_ROUTES = [
   "/missions",
   // Phase 10: Money Coach (read-only, teen-only).
   "/coach",
+  // Phase 12: Friend Circles (teen-only; covers "/friends/[teenPayId]").
+  "/friends",
 ] as const;
 
 export function isAuthRoute(pathname: string): boolean {

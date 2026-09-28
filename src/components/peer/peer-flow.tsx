@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Hourglass, QrCode, ShieldCheck, Star, UserRound } from "lucide-react";
+import { Check, Hourglass, QrCode, ShieldCheck, Star, UserPlus, UserRound } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { PEER_NOTE_MAX, PEER_REQUEST_TTL_DAYS, type PeerProfile } from "@/domain";
@@ -26,7 +26,7 @@ import { PeerSearch } from "./peer-search";
 
 export type PeerMode = "send" | "request";
 /** Where a preselected recipient came from — display only, never authority. */
-export type PeerOrigin = "qr" | "favourite";
+export type PeerOrigin = "qr" | "favourite" | "friend";
 type Step = "recipient" | "amount" | "review" | "done";
 
 /** What the engine confirmed — the success screen shows only this. */
@@ -205,10 +205,17 @@ export function PeerFlow({
               <p className="-mt-2 mb-4 flex items-center gap-1.5 text-xs text-ink-muted">
                 {origin === "qr" ? (
                   <QrCode className="h-3.5 w-3.5" aria-hidden />
+                ) : origin === "friend" ? (
+                  <UserPlus className="h-3.5 w-3.5" aria-hidden />
                 ) : (
                   <Star className="h-3.5 w-3.5" aria-hidden />
                 )}
-                {party.name} · {origin === "qr" ? "from a TeenPay QR" : "from your favourites"}
+                {party.name} ·{" "}
+                {origin === "qr"
+                  ? "from a TeenPay QR"
+                  : origin === "friend"
+                    ? "from your Friend Circle"
+                    : "from your favourites"}
               </p>
             )}
             <AmountInput

@@ -28,6 +28,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { TeenApprovalCard } from "@/components/family/approval-cards";
 import { CoachHomeCard } from "@/components/coach/coach-home-card";
 import { MissionsHomeCard } from "@/components/missions/missions-home-card";
+import { FriendsHomeCard } from "@/components/friends/friends-home-card";
 
 /**
  * The Home screen, driven entirely by derived sandbox state:
@@ -106,6 +107,7 @@ export function HomeContent() {
 
         <CoachHomeCard />
         <MissionsHomeCard />
+        <FriendsHomeCard />
 
         <SpacesSummary spaces={spaces} allocated={allocated} />
 

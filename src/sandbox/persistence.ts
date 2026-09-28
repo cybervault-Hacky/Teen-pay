@@ -2,6 +2,9 @@ import {
   checkMoney,
   CONTACT_LIMIT,
   defaultSaveSpaceId,
+  FRIEND_LIMIT,
+  FRIENDSHIP_KEYS,
+  friendPairKey,
   MISSION_PROGRESS_KEYS,
   missionById,
   PEER_NOTE_MAX,
@@ -751,7 +754,8 @@ function isContactRecord(value: unknown, accounts: Map<unknown, UnknownRecord>, 
  * `isContactRecord`), ids unique, no one saved twice by the same
  * owner, at most CONTACT_LIMIT per owner. Plus Money Missions
  * progress when present (optional, additive — see
- * `missionProgressIntegrity`).
+ * `missionProgressIntegrity`), and Friend Circles when present
+ * (optional, additive — see `friendshipIntegrity`).
  */
 export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
   if (!isRecord(value) || value.version !== SANDBOX_SCHEMA_VERSION) return false;
@@ -769,7 +773,7 @@ export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
     if (count > CONTACT_LIMIT) return false;
     perOwner.set(c.ownerAccountId, count);
   }
-  return missionProgressIntegrity(value);
+  return missionProgressIntegrity(value) && friendshipIntegrity(value);
 }
 
 const MISSION_KEYS = new Set<string>(MISSION_PROGRESS_KEYS);
@@ -814,6 +818,100 @@ function missionProgressIntegrity(value: UnknownRecord): boolean {
   if (!isArrayOf(value.missionProgress, (r) => isMissionProgressRecord(r, accounts))) return false;
   const records = value.missionProgress as UnknownRecord[];
   return new Set(records.map((r) => `${String(r.ownerAccountId)}|${String(r.missionId)}`)).size === records.length;
+}
+
+const FRIENDSHIP_KEY_SET = new Set<string>(FRIENDSHIP_KEYS);
+const FRIENDSHIP_ID_PATTERN = /^frd_[A-Za-z0-9_-]{6,100}$/;
+const FRIENDSHIP_STATUSES = new Set(["pending", "accepted", "declined", "cancelled", "removed"]);
+
+/**
+ * One stored friendship record (Phase 12): exactly the known fields
+ * (a smuggled balance, wallet id or private detail is rejected), two
+ * different real teen accounts, a valid status, and coherent
+ * timestamps — `acceptedAt` exactly when the request was accepted
+ * (accepted or later removed), `endedAt` exactly when it ended
+ * (declined, cancelled or removed), and `updatedAt` always the last
+ * transition. Self-relationships, parent accounts and impossible
+ * states are refused, not loaded.
+ */
+function isFriendshipRecord(value: unknown, accounts: Map<unknown, UnknownRecord>): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.some((k) => !FRIENDSHIP_KEY_SET.has(k))) return false;
+  if (typeof value.friendshipId !== "string" || !FRIENDSHIP_ID_PATTERN.test(value.friendshipId)) return false;
+  const requester = accounts.get(value.requesterAccountId);
+  const recipient = accounts.get(value.recipientAccountId);
+  if (!requester || requester.role !== "teen") return false;
+  if (!recipient || recipient.role !== "teen") return false;
+  if (value.requesterAccountId === value.recipientAccountId) return false;
+  if (!FRIENDSHIP_STATUSES.has(String(value.status))) return false;
+  if (!isIsoInstant(value.createdAt) || !isIsoInstant(value.updatedAt)) return false;
+  if (Date.parse(value.updatedAt) < Date.parse(value.createdAt)) return false;
+
+  const acceptedAt = value.acceptedAt;
+  const endedAt = value.endedAt;
+  switch (value.status) {
+    case "pending":
+      return acceptedAt === undefined && endedAt === undefined && value.updatedAt === value.createdAt;
+    case "accepted":
+      return (
+        typeof acceptedAt === "string" &&
+        isIsoInstant(acceptedAt) &&
+        endedAt === undefined &&
+        value.updatedAt === acceptedAt &&
+        Date.parse(acceptedAt) >= Date.parse(value.createdAt)
+      );
+    case "declined":
+    case "cancelled":
+      return (
+        acceptedAt === undefined &&
+        typeof endedAt === "string" &&
+        isIsoInstant(endedAt) &&
+        value.updatedAt === endedAt &&
+        Date.parse(endedAt) >= Date.parse(value.createdAt)
+      );
+    case "removed":
+      return (
+        typeof acceptedAt === "string" &&
+        isIsoInstant(acceptedAt) &&
+        typeof endedAt === "string" &&
+        isIsoInstant(endedAt) &&
+        value.updatedAt === endedAt &&
+        Date.parse(endedAt) >= Date.parse(acceptedAt) &&
+        Date.parse(acceptedAt) >= Date.parse(value.createdAt)
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Friendships are optional and additive in v8: absent is fine (no
+ * friendship started). When present: every record valid, ids unique,
+ * at most ONE open record (pending or accepted) per unordered pair —
+ * so A→B and B→A can never be two accepted friendships — and no teen
+ * beyond FRIEND_LIMIT friends.
+ */
+function friendshipIntegrity(value: UnknownRecord): boolean {
+  if (value.friendships === undefined) return true;
+  const accounts = new Map((value.accounts as UnknownRecord[]).map((a) => [a.id, a]));
+  if (!isArrayOf(value.friendships, (f) => isFriendshipRecord(f, accounts))) return false;
+  const records = value.friendships as UnknownRecord[];
+  if (new Set(records.map((r) => r.friendshipId)).size !== records.length) return false;
+  const openPairs = records
+    .filter((r) => r.status === "pending" || r.status === "accepted")
+    .map((r) => friendPairKey(String(r.requesterAccountId), String(r.recipientAccountId)));
+  if (new Set(openPairs).size !== openPairs.length) return false;
+  const friendsOf = new Map<unknown, number>();
+  for (const r of records) {
+    if (r.status !== "accepted") continue;
+    for (const side of [r.requesterAccountId, r.recipientAccountId]) {
+      const count = (friendsOf.get(side) ?? 0) + 1;
+      if (count > FRIEND_LIMIT) return false;
+      friendsOf.set(side, count);
+    }
+  }
+  return true;
 }
 
 /** A Phase 3 (v2) payload. */

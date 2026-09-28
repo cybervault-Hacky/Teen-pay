@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownLeft, Check, ClipboardPaste, QrCode, Send, Star } from "lucide-react";
+import { ArrowDownLeft, Check, ClipboardPaste, Hourglass, QrCode, Send, Star, UserCheck, UserPlus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import type { PeerProfile } from "@/domain";
@@ -77,6 +77,15 @@ export function ScanClient() {
     setStatus(result.ok ? `${profile.handle} added to favourites.` : result.error.message);
   };
 
+  // Phase 12: a scanned identity may also become a trusted friend.
+  // The QR payload is untouched — this only uses the resolved handle.
+  const friend = profile ? actions.friendLookup(profile.handle) : null;
+  const addFriend = () => {
+    if (!profile) return;
+    const result = actions.sendFriendRequest(profile.handle);
+    setStatus(result.ok ? `Friend request sent to ${profile.handle}.` : result.error.message);
+  };
+
   const scanAgain = () => {
     setProfile(null);
     setPayload(null);
@@ -134,6 +143,30 @@ export function ScanClient() {
               {saved ? <Check className="h-4 w-4" aria-hidden /> : <Star className="h-4 w-4" aria-hidden />}
               {saved ? "In favourites" : "Add to favourites"}
             </Button>
+            {friend?.ok && friend.value.kind === "peer" && friend.value.relation.kind === "none" && (
+              <Button variant="ghost" size="sm" onClick={addFriend}>
+                <UserPlus className="h-4 w-4" aria-hidden />
+                Add friend
+              </Button>
+            )}
+            {friend?.ok && friend.value.kind === "peer" && friend.value.relation.kind === "request_sent" && (
+              <Button variant="ghost" size="sm" disabled>
+                <Hourglass className="h-4 w-4" aria-hidden />
+                Request pending
+              </Button>
+            )}
+            {friend?.ok && friend.value.kind === "peer" && friend.value.relation.kind === "request_received" && (
+              <Button variant="ghost" size="sm" href="/friends">
+                <UserPlus className="h-4 w-4" aria-hidden />
+                Respond to request
+              </Button>
+            )}
+            {friend?.ok && friend.value.kind === "peer" && friend.value.relation.kind === "friends" && (
+              <Button variant="ghost" size="sm" disabled>
+                <UserCheck className="h-4 w-4" aria-hidden />
+                In your Friend Circle
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={scanAgain}>
               <QrCode className="h-4 w-4" aria-hidden />
               Scan another

@@ -50,7 +50,7 @@ const linkCopy = {
  * switching role and resetting — and says so plainly.
  */
 export function ProfileContent() {
-  const { state, storageStatus, actions, qr, contacts } = useSandbox();
+  const { state, storageStatus, actions, qr, contacts, friendCircle } = useSandbox();
   const data = useSandboxData();
   const [resetOpen, setResetOpen] = useState(false);
   const [resetDone, setResetDone] = useState(false);
@@ -178,6 +178,26 @@ export function ProfileContent() {
                   : "Short, optional lessons"
               }
               href="/missions"
+            />
+          </Card>
+        </section>
+      )}
+
+      {isTeen && (
+        <section aria-label="Connect">
+          <SectionHeader title="Connect" />
+          <Card className="divide-y divide-line p-2">
+            <ListRow
+              icon={Users}
+              title="Friend Circle"
+              subtitle={
+                friendCircle
+                  ? friendCircle.friends.length === 1
+                    ? "1 trusted friend"
+                    : `${friendCircle.friends.length} trusted friends`
+                  : "Trusted teens you can send to and request from"
+              }
+              href="/friends"
             />
           </Card>
         </section>

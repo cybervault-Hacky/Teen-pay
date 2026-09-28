@@ -809,6 +809,60 @@ All earlier tests were kept unchanged.
 - Evidence reflects data at the moment the step is finished, by design. Later changes don't undo a completed mission.
 - Missions aren't in the tab bar. They're reached from Home, Profile and the mission links.
 
+## Phase 12 — Friend Circles
+
+**Status.** Complete (sandbox). Teens can find another teen by TeenPay ID, ask to be friends, accept or decline, and keep a small trusted circle they can pay or request from. **Friend Circles are not a social network.** There are no feeds, followers, comments, likes, profiles with photos, leaderboards or streaks. Friendship is a *relationship* that makes the existing Send and Request flows easier to reach — it never creates a new way to move money.
+
+**Sandbox only.** Everything happens in this browser's sandbox database. There is no server, no network, no real people: "another teen" is another sandbox account on the same device. The QR payload, TeenPay ID format and directory rules are unchanged.
+
+**Architecture.** Friend Circles follow the same layering as every other phase:
+
+```
+domain/friend.ts        pure statuses, transitions table, id/format checks, view shapes
+sandbox/friends.ts      the engine: lookup, send/accept/decline/cancel/remove, the circle
+sandbox/persistence.ts  strict validation of the friendships field
+sandbox/store.tsx       six store actions + the friendCircle context
+components/friends/     the screens (they call store actions only)
+app/friends/            /friends and /friends/[teenPayId] (protected, teen-only)
+```
+
+- `domain/friend.ts` is pure: friendship statuses (`pending → accepted | declined | cancelled`, `accepted → removed`), the transition table, the pair key (two account ids in sorted order, never stored), id and note validation, and the view shapes. It has no clock and no randomness.
+- `sandbox/friends.ts` is the engine. It authorizes every call against `friends.use` (teen only), resolves the TeenPay ID through the existing directory (`resolvePeer`), and writes **one thing**: `db.friendships` (a single `replace`). It never writes the ledger, wallets, operations, requests, Spaces, allowances, contacts or favourites, and it has no path to `postOperation`. A friendship can never bypass balances, limits, approvals or idempotency — paying a friend goes through the exact same Send flow as paying anyone.
+- Notifications are emitted by the shared event projector (`notificationsForEvent`), the same path as transfers. Only two quiet system notifications exist: *request received* (recipient) and *request accepted* (requester). Decline, cancel and remove stay silent — no re-request nudges, no engagement. Friend events are **not** in the family event set, so friendship changes never enter the financial Activity log or the family log.
+- The store adds `friendCircle()`, `friendLookup()`, `sendFriendRequest()`, `acceptFriendRequest()`, `declineFriendRequest()`, `cancelFriendRequest()` and `removeFriend()`, all through the same signed-in gate and single commit path. The UI reads the memoized circle from context and never touches selectors or raw collections.
+
+**Discovery and safety.**
+- Discovery is **TeenPay ID only** (`@meera`). There is no directory to browse, no "people you may know", no name search and no harvesting of account ids: typing something that looks like an internal id (`usr_…`, `wal_…`, `frd_…`) is rejected by the lookup itself.
+- Teen-to-teen only. Parents can't open `/friends` (permission and route gate), and friend requests can't be sent to, accepted by or looked up for a parent.
+- A friend sees only what the TeenPay directory already shows: name, @handle and initials. Friend views carry no account ids, wallet ids, balances, history, Spaces, goals, limits or guardian settings.
+
+**Domain rules.**
+- One open record per pair of accounts; the pair key makes "A → B" and "B → A" the same pair, so duplicates are impossible.
+- Transitions follow the table strictly: a declined or cancelled request can't become accepted — a new request must be sent. Terminal statuses are terminal.
+- Idempotent and replay-safe: repeating the same `requestId` returns the first result without creating a second record, a second notification or a clock change. Accept/decline/cancel replay the outcome on an already-decided record.
+- Stored timestamps never go backwards, even if the device clock does.
+- Up to 50 friends per teen.
+
+**Persistence and schema.**
+- Friendships live in the one sandbox database as `friendships?: FriendshipRecord[]` — an **optional, additive field**, so the schema stays **v8**. There is no migration and no separate storage key; pre-Phase-12 data loads unchanged.
+- `isSandboxDatabase` validates it strictly (unknown keys rejected; records coherent with their status; both sides must be teen accounts and not the same account; ids unique; at most one open record per pair; the 50-friend cap). Corrupt or tampered data falls through to the existing backup-and-recovery path, exactly like earlier phases.
+- Friendships survive reload and the Reset Sandbox flow clears them with everything else.
+
+**Integration.**
+- Friend detail offers **Send Money** and **Request Money**, deep-linked into the existing `/send` and `/request` flows (`?to=<teenPayId>&via=friend`). Guardian approval thresholds, daily limits, balances, review steps and idempotency apply unchanged.
+- Home gains a small Friend Circle card (counts + next action); Profile gains a teen-only entry. The tab bar keeps its five items.
+- QR scanning is friendship-aware without changing the QR: after scanning a teen, the scan screen shows whether you're friends and offers to send a request — or opens their friend page when you are. The QR still holds only the versioned TeenPay ID.
+- Favourites remain a separate, private concept; adding or removing a friend never changes them.
+- Two new notifications use the existing system notification kind; no new UI category was needed.
+
+**Tests.** New suites: `friends-domain` (statuses, transitions, pair keys, validation), `friends-engine` (lookup, send/accept/decline/cancel/remove, idempotency, clock guard, limits), `friends-persistence` (schema v8 additive field, strict validation, corruption → recovery), `friends-authorization` (teen-only, party checks precede role checks, no parent paths), `friends-privacy` (views carry profiles only, no ids or money), `friends-integration` (friendship never bypasses guardian rules; QR payload unchanged; favourites independent), `friends-ui`, `friends-security` (static audit: engine writes only `friendships`; UI uses store actions only; no network, analytics, AI, randomness or secrets), and the 34-step `phase12-journey` through the real provider stack. All earlier suites remain unchanged and green.
+
+**Limitations.**
+- Sandbox only, one device, no sync. "Friends" exist only in this browser's database.
+- No blocking, reporting or muting yet; removal is the only safeguard, and it's mutual.
+- Friend requests expire only by decision (decline/cancel), not by a timer.
+- The circle cap (50) is fixed for the sandbox.
+
 ## Design system
 
 All styling flows from the semantic tokens in `src/app/globals.css`:
@@ -845,5 +899,6 @@ Money is rendered exclusively through `AmountDisplay` (tabular numerals, INR for
 - **Phase 8** — Send & Request Money: teen-to-teen transfers by TeenPay ID (one atomic `TRF-` operation, available money only, idempotent), money requests (pending → accepted / declined / cancelled / expired after 7 days), guardian limits and approvals for transfers, privacy-safe directory, Requests center, schema v7 migration
 - **Phase 9** — QR Payments, Contacts & Fast Pay: a versioned TeenPay QR holding only the public TeenPay ID, a strict central validator, a camera scanner (BarcodeDetector) with an honest sandbox paste path, scan → confirm → existing Send/Request flow, owner-scoped favourites with Quick Pay / Quick Request, schema v8 migration
 - **Phase 10** — Money Coach: a read-only, teen-only view of your own money (week / month / 30 days) — available, set aside, received, spent — with deterministic factual insights, goal progress, lessons and documented definitions; no writes, no network, no AI, no score
-- **Phase 11 (this)** — Money Missions: ten short, optional, teen-only learning missions (reading, gentle checks, visiting Activity / Coach, and real evidence such as creating a Space) with deterministic progress saved in the one sandbox database; they never move money, need no spending and have no rewards, streaks, timers or reminders
+- **Phase 11** — Money Missions: ten short, optional, teen-only learning missions (reading, gentle checks, visiting Activity / Coach, and real evidence such as creating a Space) with deterministic progress saved in the one sandbox database; they never move money, need no spending and have no rewards, streaks, timers or reminders
+- **Phase 12 (this)** — Friend Circles: teen-only trusted peer circles found by TeenPay ID (request → accept/decline, cancel, remove) saved as an additive field in the one sandbox database (schema stays v8); friends open the existing Send/Request flows with guardian rules fully intact; not a social network — no feeds, no browsing, no money data shared
 - **Later (recommendation only)** — a real auth provider behind `AuthService` and a cloud repository behind the repository contract, then real payment rails with a regulated provider

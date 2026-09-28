@@ -111,6 +111,17 @@ import {
   type AddContactOutcome,
   type ContactView,
 } from "./contacts";
+import {
+  acceptFriendRequestTransition,
+  cancelFriendRequestTransition,
+  declineFriendRequestTransition,
+  friendCircleFor,
+  friendLookup,
+  removeFriendTransition,
+  sendFriendRequestTransition,
+  type AcceptFriendRequestOutcome,
+  type SendFriendRequestOutcome,
+} from "./friends";
 import { qrIdentityFor, resolveQrRecipient, type QrIdentity } from "./qr";
 import { coachReportFor } from "./coach";
 import {
@@ -119,7 +130,7 @@ import {
   missionDetailFor,
   startMissionTransition,
 } from "./missions";
-import type { CoachPeriod, CoachReport, MissionBoard, MissionView, PeerProfile } from "@/domain";
+import type { CoachPeriod, CoachReport, FriendCircle, FriendPreview, MissionBoard, MissionView, PeerProfile } from "@/domain";
 import type { SandboxDatabase, SandboxError, SandboxResult, SandboxState } from "./types";
 
 /**
@@ -314,6 +325,37 @@ export interface SandboxActions {
   /** Same, into the existing Request Money flow (`createMoneyRequest`). */
   startQrRequest: (payload: string) => SandboxResult<{ recipient: PeerProfile; href: string }>;
 
+  // ── Friend Circles (trusted peers only — see friends.ts) ──
+  /** The signed-in teen's circle: friends, incoming and sent requests. */
+  friendCircle: () => SandboxResult<FriendCircle>;
+  /**
+   * Safe discovery: one exact TeenPay ID → a minimal preview (public
+   * profile + relationship state), or the viewer's own ID as a
+   * neutral "self" result. Parents and signed-out sessions are refused.
+   */
+  friendLookup: (teenPayId: string) => SandboxResult<FriendPreview>;
+  /**
+   * Sends a friend request to an eligible teen. `requestId` is
+   * generated once per action; a repeat answers from the record and
+   * never creates a second request. Moves nothing — friendship never
+   * implies payment authorization.
+   */
+  sendFriendRequest: (
+    teenPayId: string,
+    requestId?: string,
+  ) => SandboxResult<SendFriendRequestOutcome>;
+  /** The recipient accepts a pending request. Idempotent. */
+  acceptFriendRequest: (friendshipId: string) => SandboxResult<AcceptFriendRequestOutcome>;
+  /** The recipient declines. Quiet — no notification. */
+  declineFriendRequest: (friendshipId: string) => SandboxResult<{ status: "declined" }>;
+  /** The requester withdraws their own pending request. Quiet. */
+  cancelFriendRequest: (friendshipId: string) => SandboxResult<{ status: "cancelled" }>;
+  /**
+   * Either friend ends the friendship. Changes the relationship only —
+   * never history, payments, requests, Spaces or rules.
+   */
+  removeFriend: (teenPayId: string) => SandboxResult<{ removed: string }>;
+
   // ── Money Coach (read-only — see coach.ts) ──
   /**
    * The signed-in teen's Money Coach report for a period: summary,
@@ -391,6 +433,12 @@ export interface SandboxContextValue {
   };
   /** The viewer's own TeenPay QR (null for parents / ineligible accounts). */
   qr: QrIdentity | null;
+  /**
+   * The signed-in teen's Friend Circle (null for parents — a parent
+   * never sees a teen's private circle): trusted friends, incoming
+   * requests and sent requests, resolved to public profiles only.
+   */
+  friendCircle: FriendCircle | null;
   /**
    * The viewer's favourites, resolved against current state (public
    * profiles only; `available: false` for people who can't take part).
@@ -760,6 +808,24 @@ export function SandboxProvider({
       },
       removeContact: (teenPayId) =>
         dispatchDb((db, actorId, at) => removeContactTransition(db, { actorId, at, teenPayId })),
+
+      friendCircle: () => readDb((db, actorId) => friendCircleFor(db, actorId)),
+      friendLookup: (teenPayId) => readDb((db, actorId) => friendLookup(db, actorId, teenPayId)),
+      sendFriendRequest: (teenPayId, requestId) => {
+        const key = requestId ?? makeId("frd");
+        return dispatchDb((db, actorId, at) =>
+          sendFriendRequestTransition(db, { actorId, at, teenPayId, requestId: key }),
+        );
+      },
+      acceptFriendRequest: (friendshipId) =>
+        dispatchDb((db, actorId, at) => acceptFriendRequestTransition(db, { actorId, at, friendshipId })),
+      declineFriendRequest: (friendshipId) =>
+        dispatchDb((db, actorId, at) => declineFriendRequestTransition(db, { actorId, at, friendshipId })),
+      cancelFriendRequest: (friendshipId) =>
+        dispatchDb((db, actorId, at) => cancelFriendRequestTransition(db, { actorId, at, friendshipId })),
+      removeFriend: (teenPayId) =>
+        dispatchDb((db, actorId, at) => removeFriendTransition(db, { actorId, at, teenPayId })),
+
       resolveQrIdentity: (payload) => readDb((db, actorId) => resolveQrRecipient(db, actorId, payload)),
       createQrPayload: () => readDb((db, actorId) => qrIdentityFor(db, actorId)),
       startQrPayment: (payload) => startFromQr(payload, "/send"),
@@ -870,6 +936,11 @@ export function SandboxProvider({
       qr: (() => {
         const identity = qrIdentityFor(db, viewerId);
         return identity.ok ? identity.value : null;
+      })(),
+      friendCircle: (() => {
+        if (viewer.role !== "teen") return null;
+        const circle = friendCircleFor(db, viewerId);
+        return circle.ok ? circle.value : null;
       })(),
       contacts: {
         list: selectContactViews(db, viewerId),

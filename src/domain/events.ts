@@ -91,6 +91,26 @@ export type DomainEvent =
       payerHandle: string;
       amount: number;
     })
+  // Friend Circles (Phase 12). Trusted-peer relationships only —
+  // never financial: no amount, no wallet, no reference. Handles are
+  // display snapshots. Declines, cancellations and removals stay
+  // quiet on purpose (no notification loops, no social pressure).
+  | (EventBase & {
+      type: "friend_request_received";
+      friendshipId: string;
+      requesterId: string;
+      recipientId: string;
+      requesterHandle: string;
+      recipientHandle: string;
+    })
+  | (EventBase & {
+      type: "friend_request_accepted";
+      friendshipId: string;
+      requesterId: string;
+      recipientId: string;
+      requesterHandle: string;
+      recipientHandle: string;
+    })
   | (EventBase & {
       type: "allowance_sent";
       entryId: string;

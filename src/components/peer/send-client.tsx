@@ -14,16 +14,18 @@ const COPY: Record<PeerMode, { title: string; description: string }> = {
  * The /send and /request screens.
  *
  * Phase 9: `?to=meera&via=qr|favourite` preselects a recipient (from a
- * scanned QR or a favourite). `to` is only a TeenPay ID — PeerFlow
- * resolves it through the live directory, and the engine re-checks at
- * confirm — so a hand-edited link can't do more than typing that ID
- * into search. `via` changes a caption, nothing else.
+ * scanned QR or a favourite); Phase 12 adds `via=friend` (from the
+ * Friend Circle). `to` is only a TeenPay ID — PeerFlow resolves it
+ * through the live directory, and the engine re-checks at confirm —
+ * so a hand-edited link can't do more than typing that ID into
+ * search. `via` changes a caption, nothing else.
  */
 export function PeerClient({ mode }: { mode: PeerMode }) {
   const params = useSearchParams();
   const to = params?.get("to")?.slice(0, 40) ?? null;
   const via = params?.get("via");
-  const origin: PeerOrigin | null = via === "qr" || via === "favourite" ? via : null;
+  const origin: PeerOrigin | null =
+    via === "qr" || via === "favourite" || via === "friend" ? via : null;
   return (
     <>
       <PageHeader

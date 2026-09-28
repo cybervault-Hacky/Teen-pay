@@ -1,6 +1,7 @@
 import type {
   AppNotification,
   Contact,
+  Friendship,
   MissionProgress,
   ApprovalRequest,
   DomainEvent,
@@ -37,7 +38,9 @@ import type {
  * v7 — Phase 8 (Send & Request Money: TeenPay money requests as
  *      their own records; peer transfers are ordinary operations).
  * v8 — Phase 9 (QR & favourites: each teen's saved contacts as
- *      owner-scoped records holding only a TeenPay ID).
+ *      owner-scoped records holding only a TeenPay ID). Phase 11
+ *      added optional `missionProgress` and Phase 12 optional
+ *      `friendships` — both additive, no version bump.
  */
 export const SANDBOX_SCHEMA_VERSION = 8;
 
@@ -128,6 +131,15 @@ export interface SandboxDatabase {
    * by the mission engine (`missions.ts`), which never touches money.
    */
   missionProgress?: MissionProgress[];
+  /**
+   * Friend Circles (Phase 12): trusted-peer relationship records —
+   * requests and friendships between teens. Optional and additive —
+   * absent means no friendship has been started, so every earlier v8
+   * database is still a valid v8 database (no migration). Validated
+   * whenever present. Written only by the friend engine
+   * (`friends.ts`), which never touches money.
+   */
+  friendships?: Friendship[];
   notifications: AppNotification[];
   familyLogs: FamilyLog[];
   securityEvents: SecurityEvent[];
@@ -236,7 +248,14 @@ export type SandboxErrorCode =
   | "mission_step"
   | "contact_exists"
   | "unknown_contact"
-  | "contact_limit_reached";
+  | "contact_limit_reached"
+  // Friend Circles (Phase 12)
+  | "self_friend"
+  | "friend_exists"
+  | "friend_request_pending"
+  | "friend_limit_reached"
+  | "unknown_friendship"
+  | "not_friends";
 
 /**
  * A typed, human-readable error. `code` drives logic; `message`
