@@ -80,6 +80,8 @@ export const PROTECTED_ROUTES = [
   "/friends",
   // Phase 13: TeenPay ID identity (teen-only; covers "/id/[teenPayId]").
   "/id",
+  // Phase 14: Teen Safety Shield (teen-only settings & overview).
+  "/safety",
 ] as const;
 
 export function isAuthRoute(pathname: string): boolean {

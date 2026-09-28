@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { ShieldCheck } from "lucide-react";
+import { useMemo, useState } from "react";
 import { formatINR } from "@/lib/currency";
 import { formatDayLabel } from "@/lib/format";
 import type { PeerRequestView } from "@/sandbox/selectors";
@@ -42,6 +43,17 @@ export function PeerRequestCard({
   const [error, setError] = useState<string | null>(null);
   const incoming = request.direction === "incoming";
   const pending = request.status === "pending";
+  /**
+   * Phase 14: calm Safety Shield context for a pending incoming
+   * request — read-only and re-derived on every render. It never
+   * blocks, and the pay/decline controls stay exactly as they were.
+   */
+  const shieldNotice = useMemo(() => {
+    if (!incoming || !pending) return null;
+    const assessed = actions.shieldAssessRequest(request.requestId);
+    if (!assessed.ok || assessed.value.outcome === "allow") return null;
+    return assessed.value.reasons[0] ?? null;
+  }, [actions, incoming, pending, request.requestId]);
   const amount = formatINR(request.amount);
   const title = incoming
     ? `${amount} requested by ${request.party.handle}`
@@ -90,6 +102,15 @@ export function PeerRequestCard({
               : `${request.statusLabel} ${formatDayLabel(request.respondedAt ?? request.expiresAt)}`}
             {request.reference ? ` · ${request.reference}` : ""}
           </p>
+          {shieldNotice && (
+            <p className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-ink-muted">
+              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" aria-hidden />
+              <span>
+                <span className="font-medium text-ink">{shieldNotice.title}.</span>{" "}
+                {shieldNotice.explanation}
+              </span>
+            </p>
+          )}
         </div>
         <div className="shrink-0 text-right">
           <AmountDisplay value={request.amount} size="sm" tone="muted" />

@@ -918,6 +918,52 @@ app/id/                   /id and /id/[teenPayId] (protected, teen-only)
 - No ID-change cooldown or history log in the sandbox (a server would add both).
 - Exact-match lookup only — deliberately no fuzzy/people search.
 
+## Phase 14 — Teen Safety Shield
+
+**Status.** Complete (sandbox). The Teen Safety Shield is a deterministic, explainable safety layer that sits *beside* the payment engine: it surfaces calm, reasoned context at the moment of confirmation — one explicit "Before you continue" review moment for confirms, quieter inline notices otherwise — and never moves money itself. It is **not** fraud detection, **not** scoring, **not** surveillance, and **not** a replacement for guardian controls. **Sandbox only:** every check is derived locally from data the sandbox already holds; there is no server, no external API, no AI model, no tracking.
+
+**Purpose and boundaries.**
+
+| Concern | Owner | What it can do |
+| --- | --- | --- |
+| Authorization, guardian approvals, limits, balance & freeze | Payment engine (unchanged) | Decide everything on confirm; block when rules say so |
+| Safety Shield | `src/sandbox/shield.ts` (new) | Show calm notices, or ask for one extra confirm step — never block, never write money |
+| Money Coach / Missions | Untouched | Read-only learning; no gamified "safety" content added |
+
+Safety is not authorization: the shield can only *add* a pause or context. Every block still comes from the existing rules (`exceeds_daily_limit`, `insufficient_balance`, `wallet_frozen`, approvals…), and the payment engine re-checks all of them when the teen confirms. The shield never bypasses anything — it imports no payment machinery, not even as a type.
+
+**Deterministic rules (all derived from existing sandbox data).**
+
+| Reason code | Level | Trigger |
+| --- | --- | --- |
+| `first_payment` | confirm | No outgoing ledger entries from you to this account yet |
+| `not_in_circle` | notice | Not a friend, not a favourite, and no money has ever moved between you |
+| `large_amount` | confirm | Amount × 2 ≥ your sendable wallet balance (Money Spaces excluded, like the engine) |
+| `rapid_repeat` | confirm | 2+ payments to the same person within the fixed 24-hour window (ledger timestamps) |
+| `unknown_requester` | notice | Incoming request from someone with no circle, interaction or request history |
+| `requester_identity_updated` | notice | Request snapshot handle ≠ the requester's current TeenPay ID (same account, renamed) |
+
+Levels are `notice` and `confirm` only — there is no `block` in the shield vocabulary. Outcomes are `allow | notice | confirm`; assessments are pure functions of the database and return the input untouched.
+
+**Optional reminders ("You're in control").** `/safety` (teen-only) lists the *required* protections as facts — guardian approvals, limits, balance & wallet checks, one-payment-per-action — which nobody can switch off, plus three optional reminder switches. Switching one off never hides its reason: it downgrades that reason from the explicit "Before you continue" confirmation moment to a quieter "Something to know" notice on the same review screen. Settings are stored as one additive, validated record per teen (`db.shieldSettings`; schema stays v8) holding only three booleans and a timestamp — no reason history, no assessments, no recipient data.
+
+**Privacy boundary.**
+
+- Assessments are display-safe: TeenPay ID and name only — no account/wallet/family ids, no balances, no labels ("scammer", "risky", …) anywhere in the vocabulary or copy.
+- Reads write nothing; there is no safety history, no second event log, and no notifications.
+- Parent privacy (§21) is unchanged: the shield adds no parent-visible surface, no new exposure of warnings/declines/lookups/scans, and every entry point refuses parents with the same faceless `not_permitted` used by the directory.
+- Tampered `shieldSettings` (extra keys, non-booleans, duplicate owners, non-teen owners, bad timestamps) are rejected by `isSandboxDatabase` and fall through to the backup-and-recovery path.
+
+**Friend Circle & favourites.** Friendship and favourites remain *context*, never authority: they suppress the `not_in_circle` notice but bypass nothing — limits, approvals, balance and freeze behave exactly as before (tested).
+
+**Tests.** New suites: `shield-domain` (vocabulary, determinism, calm-copy audit, settings semantics), `shield-engine` (all six reasons, window boundaries, refusals, purity, the one write path), `shield-integration` (guardian approvals/limits/balance/freeze/spaces/idempotency intact, store wiring), `shield-privacy` (display-safe output, no trace, §21, tampering), `shield-security` (static audit: no payment imports, one `shieldSettings` write, no scores/notifications/tracking, authorization on all four entry points), `shield-ui` (inline confirmation moments, notices, request cards, QR guidance, `/safety`, keyboard toggles, role gates), and the 45-step `phase14-journey`. All earlier suites remain unchanged and green.
+
+**Limitations.**
+- Context is only as good as sandbox data: "first payment" means first payment *on this device*, and the 24-hour repeat window depends on ledger timestamps (present here; documented as the dependency).
+- The shield does not judge people — no risk/trust scores, no blacklists, no labels — so it can't warn about anything that isn't derivable from the teen's own history and circle; anything richer would require fabricated signals, which it refuses to do.
+- Reminders apply to confirm-level reasons only; notices always show.
+- No safety analytics of any kind, by design.
+
 ## Design system
 
 All styling flows from the semantic tokens in `src/app/globals.css`:
@@ -956,5 +1002,6 @@ Money is rendered exclusively through `AmountDisplay` (tabular numerals, INR for
 - **Phase 10** — Money Coach: a read-only, teen-only view of your own money (week / month / 30 days) — available, set aside, received, spent — with deterministic factual insights, goal progress, lessons and documented definitions; no writes, no network, no AI, no score
 - **Phase 11** — Money Missions: ten short, optional, teen-only learning missions (reading, gentle checks, visiting Activity / Coach, and real evidence such as creating a Space) with deterministic progress saved in the one sandbox database; they never move money, need no spending and have no rewards, streaks, timers or reminders
 - **Phase 12** — Friend Circles: teen-only trusted peer circles found by TeenPay ID (request → accept/decline, cancel, remove) saved as an additive field in the one sandbox database (schema stays v8); friends open the existing Send/Request flows with guardian rules fully intact; not a social network — no feeds, no browsing, no money data shared
-- **Phase 13 (this)** — TeenPay ID: the stable public identity layer — centralized normalization/validation/reserved ids, structured availability, copy/share/change on Profile, canonical exact-match lookup at `/id` with one shared identity surface, teen-only `identity.use`; identity is an alias over the stable internal account id, so changing it never moves money or re-targets relationships; no schema bump
+- **Phase 13** — TeenPay ID: the stable public identity layer — centralized normalization/validation/reserved ids, structured availability, copy/share/change on Profile, canonical exact-match lookup at `/id` with one shared identity surface, teen-only `identity.use`; identity is an alias over the stable internal account id, so changing it never moves money or re-targets relationships; no schema bump
+- **Phase 14 (this)** — Teen Safety Shield: a deterministic, explainable safety layer beside the payment engine — six derived reason codes (first payment, not-in-circle, large share, rapid repeat, unknown requester, renamed requester) producing calm `notice` / `confirm` outcomes only; optional per-teen reminders at `/safety` that can soften confirmations into notices but never touch required protections; no scores, no labels, no notifications, no history, no parent visibility, no schema bump
 - **Later (recommendation only)** — a real auth provider behind `AuthService` and a cloud repository behind the repository contract, then real payment rails with a regulated provider

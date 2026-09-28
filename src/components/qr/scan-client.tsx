@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownLeft, Check, ClipboardPaste, Hourglass, QrCode, Send, Star, UserCheck, UserPlus } from "lucide-react";
+import { ArrowDownLeft, Check, ClipboardPaste, Hourglass, QrCode, Send, ShieldCheck, Star, UserCheck, UserPlus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import type { PeerProfile } from "@/domain";
@@ -122,7 +122,12 @@ export function ScanClient() {
                 <p className="truncate text-sm text-ink-muted">{profile.handle}</p>
               </div>
             </div>
-            <p className="mt-4 flex items-center gap-1.5 border-t border-line pt-3.5 text-xs text-ink-faint">
+            <p className="mt-4 flex items-start gap-1.5 border-t border-line pt-3.5 text-xs leading-relaxed text-ink-muted">
+              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" aria-hidden />
+              Verify the TeenPay ID before continuing — this code only names someone; nothing is
+              paid, requested or saved by a scan.
+            </p>
+            <p className="mt-2.5 flex items-center gap-1.5 text-xs text-ink-faint">
               <QrCode className="h-3.5 w-3.5 shrink-0" aria-hidden />
               {source === "camera" ? "Scanned with your camera" : "From a pasted sandbox QR"} · nothing has moved
             </p>

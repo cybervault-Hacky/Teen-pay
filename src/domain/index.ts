@@ -24,6 +24,7 @@ export * from "./contact";
 export * from "./friend";
 export * from "./ledger";
 export * from "./safety";
+export * from "./shield";
 export * from "./allowance";
 export * from "./approval";
 export * from "./events";

@@ -761,8 +761,10 @@ function isContactRecord(value: unknown, accounts: Map<unknown, UnknownRecord>, 
  * `isContactRecord`), ids unique, no one saved twice by the same
  * owner, at most CONTACT_LIMIT per owner. Plus Money Missions
  * progress when present (optional, additive — see
- * `missionProgressIntegrity`), and Friend Circles when present
- * (optional, additive — see `friendshipIntegrity`).
+ * `missionProgressIntegrity`), Friend Circles when present
+ * (optional, additive — see `friendshipIntegrity`), and Safety Shield
+ * reminders when present (optional, additive — see
+ * `shieldSettingsIntegrity`).
  */
 export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
   if (!isRecord(value) || value.version !== SANDBOX_SCHEMA_VERSION) return false;
@@ -780,7 +782,7 @@ export function isSandboxDatabase(value: unknown): value is SandboxDatabase {
     if (count > CONTACT_LIMIT) return false;
     perOwner.set(c.ownerAccountId, count);
   }
-  return missionProgressIntegrity(value) && friendshipIntegrity(value);
+  return missionProgressIntegrity(value) && friendshipIntegrity(value) && shieldSettingsIntegrity(value);
 }
 
 const MISSION_KEYS = new Set<string>(MISSION_PROGRESS_KEYS);
@@ -919,6 +921,41 @@ function friendshipIntegrity(value: UnknownRecord): boolean {
     }
   }
   return true;
+}
+
+const SHIELD_SETTINGS_KEYS = [
+  "ownerAccountId",
+  "firstTimeRecipient",
+  "largePayments",
+  "repeatedPayments",
+  "updatedAt",
+] as const;
+const SHIELD_SETTINGS_KEY_SET = new Set<string>(SHIELD_SETTINGS_KEYS);
+
+function isShieldSettingsRecord(value: unknown, accounts: Map<unknown, UnknownRecord>): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== SHIELD_SETTINGS_KEYS.length) return false;
+  if (keys.some((k) => !SHIELD_SETTINGS_KEY_SET.has(k))) return false;
+  const owner = accounts.get(value.ownerAccountId);
+  if (!owner || owner.role !== "teen") return false;
+  if (typeof value.firstTimeRecipient !== "boolean") return false;
+  if (typeof value.largePayments !== "boolean") return false;
+  if (typeof value.repeatedPayments !== "boolean") return false;
+  return typeof value.updatedAt === "string" && isIsoInstant(value.updatedAt);
+}
+
+/**
+ * Shield reminders are optional and additive in v8: absent is fine
+ * (the defaults apply). When present: every record valid, at most one
+ * per teen, and no unknown keys (so nothing extra can be smuggled in).
+ */
+function shieldSettingsIntegrity(value: UnknownRecord): boolean {
+  if (value.shieldSettings === undefined) return true;
+  const accounts = new Map((value.accounts as UnknownRecord[]).map((a) => [a.id, a]));
+  if (!isArrayOf(value.shieldSettings, (s) => isShieldSettingsRecord(s, accounts))) return false;
+  const owners = (value.shieldSettings as UnknownRecord[]).map((r) => r.ownerAccountId);
+  return new Set(owners).size === owners.length;
 }
 
 /** A Phase 3 (v2) payload. */

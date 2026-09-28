@@ -27,6 +27,8 @@ export type Permission =
   | "friends.use"
   /** Phase 13: use one's own TeenPay ID identity (lookup, copy, share, change). */
   | "identity.use"
+  /** Phase 14: one's own Safety Shield context and optional reminders. */
+  | "shield.use"
   // Guardian — a connected teen's money
   | "family.join"
   | "teen.view_overview"
@@ -54,6 +56,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "missions.use",
     "friends.use",
     "identity.use",
+    "shield.use",
     "family.disconnect",
   ],
   parent: [
@@ -89,6 +92,7 @@ export const TEEN_SELF_PERMISSIONS: readonly Permission[] = [
   "missions.use",
   "friends.use",
   "identity.use",
+  "shield.use",
 ];
 
 /** Permissions that need an active, linked guardian of the teen. */

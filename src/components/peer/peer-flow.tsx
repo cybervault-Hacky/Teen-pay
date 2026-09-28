@@ -3,7 +3,7 @@
 import { Check, Hourglass, QrCode, ShieldCheck, Star, UserPlus, UserRound } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { PEER_NOTE_MAX, PEER_REQUEST_TTL_DAYS, type PeerProfile } from "@/domain";
+import { PEER_NOTE_MAX, PEER_REQUEST_TTL_DAYS, type PeerProfile, type ShieldAssessment } from "@/domain";
 import { makeId } from "@/lib/ids";
 import { formatINR } from "@/lib/currency";
 import { formatFullDateTime } from "@/lib/format";
@@ -22,6 +22,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { FlowTransition } from "@/components/motion/flow-transition";
 import { AmountInput } from "@/components/pay/amount-input";
+import { ShieldCard } from "@/components/safety-shield/shield-card";
 import { PeerSearch } from "./peer-search";
 
 export type PeerMode = "send" | "request";
@@ -76,6 +77,12 @@ export function PeerFlow({
   const [key, setKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
+  /**
+   * Phase 14: the Safety Shield's read-only assessment for this flow.
+   * Context only — the payment engine still decides everything when
+   * the teen confirms; a `confirm` outcome inserts one calm step.
+   */
+  const [shieldNote, setShieldNote] = useState<ShieldAssessment | null>(null);
 
   const sendable = selectSendableBalance(state);
   const amount = digits ? Number(digits) : 0;
@@ -102,6 +109,18 @@ export function PeerFlow({
   }, [step]);
 
   const enterReview = () => {
+    if (party) {
+      // Phase 14: calm safety context, assessed read-only and shown
+      // inline on the review — beside the existing review, never a
+      // gate in front of it. The engine still decides on confirm.
+      const assessed =
+        mode === "send"
+          ? actions.shieldAssessSend(party.handle, amount)
+          : actions.shieldAssessRequestCreate(party.handle);
+      setShieldNote(assessed.ok ? assessed.value : null);
+    } else {
+      setShieldNote(null);
+    }
     setKey(makeId(mode === "send" ? "snd" : "prq"));
     setStep("review");
   };
@@ -150,6 +169,7 @@ export function PeerFlow({
   const backToRecipient = () => {
     setPresetActive(false);
     setPicked(null);
+    setShieldNote(null);
     setStep("recipient");
   };
 
@@ -161,6 +181,7 @@ export function PeerFlow({
     setNote("");
     setKey(null);
     setReceipt(null);
+    setShieldNote(null);
   };
 
   return (
@@ -264,6 +285,14 @@ export function PeerFlow({
             <StepHeading
               title={mode === "send" ? `Send ${formatINR(amount)}` : `Request ${formatINR(amount)}`}
             />
+            {shieldNote && (
+              <div className="mb-4">
+                <ShieldCard
+                  assessment={shieldNote}
+                  heading={shieldNote.outcome === "confirm" ? "Before you continue" : "Something to know"}
+                />
+              </div>
+            )}
             <Card className="p-5">
               <dl className="space-y-4">
                 <div>

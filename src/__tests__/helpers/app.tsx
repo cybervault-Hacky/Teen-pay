@@ -19,6 +19,7 @@ import CoachPage from "@/app/coach/page";
 import MissionsPage from "@/app/missions/page";
 import FriendsPage from "@/app/friends/page";
 import IdentityPage from "@/app/id/page";
+import SafetyPage from "@/app/safety/page";
 import SignInPage from "@/app/sign-in/page";
 import { AppShell } from "@/components/layout/app-shell";
 import { FriendDetail } from "@/components/friends/friend-detail";
@@ -49,6 +50,7 @@ const PAGES: Record<string, () => React.ReactNode> = {
   "/missions": () => <MissionsPage />,
   "/friends": () => <FriendsPage />,
   "/id": () => <IdentityPage />,
+  "/safety": () => <SafetyPage />,
 };
 
 /**

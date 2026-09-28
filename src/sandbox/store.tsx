@@ -129,6 +129,13 @@ import {
   identityProfileFor,
   type ChangeTeenPayIdOutcome,
 } from "./teenpay-id";
+import {
+  assessRequestCreateSafety,
+  assessRequestSafety,
+  assessSendSafety,
+  shieldSettingsFor,
+  updateShieldSettingsTransition,
+} from "./shield";
 import { coachReportFor } from "./coach";
 import {
   advanceMissionTransition,
@@ -136,7 +143,7 @@ import {
   missionDetailFor,
   startMissionTransition,
 } from "./missions";
-import type { CoachPeriod, CoachReport, FriendCircle, FriendPreview, IdentityProfile, MissionBoard, MissionView, PeerProfile, TeenPayIdAvailability } from "@/domain";
+import type { CoachPeriod, CoachReport, FriendCircle, FriendPreview, IdentityProfile, MissionBoard, MissionView, PeerProfile, ShieldAssessment, ShieldSettings, TeenPayIdAvailability } from "@/domain";
 import type { SandboxDatabase, SandboxError, SandboxResult, SandboxState } from "./types";
 
 /**
@@ -381,6 +388,26 @@ export interface SandboxActions {
    */
   changeTeenPayId: (teenPayId: string) => SandboxResult<ChangeTeenPayIdOutcome>;
 
+  // ── Teen Safety Shield (context only — see shield.ts) ──
+  /**
+   * Calm safety context for a planned send: first-time recipient,
+   * large share of available money, several recent payments. A read —
+   * it moves nothing and changes nothing; the payment engine still
+   * decides everything on confirm.
+   */
+  shieldAssessSend: (recipient: string, amount: number) => SandboxResult<ShieldAssessment>;
+  /** Safety context for one incoming money request (calm notices only). */
+  shieldAssessRequest: (requestId: string) => SandboxResult<ShieldAssessment>;
+  /** Safety context when asking someone for money (a quiet notice). */
+  shieldAssessRequestCreate: (payer: string) => SandboxResult<ShieldAssessment>;
+  /**
+   * Saves the teen's own optional reminders. These can soften
+   * confirmations into notices — never relax a required protection.
+   */
+  updateShieldSettings: (
+    patch: Partial<ShieldSettings>,
+  ) => SandboxResult<{ settings: ShieldSettings }>;
+
   // ── Money Coach (read-only — see coach.ts) ──
   /**
    * The signed-in teen's Money Coach report for a period: summary,
@@ -474,6 +501,12 @@ export interface SandboxContextValue {
     /** A favourite's current profile, only while in the list and eligible. */
     lookup: (teenPayId: string) => PeerProfile | null;
   };
+  /**
+   * The teen's Safety Shield reminders (defaults for everyone else).
+   * Optional confirmations only — required protections live in the
+   * payment and authorization engines and can't be switched off here.
+   */
+  shield: ShieldSettings;
 }
 
 const SandboxDataContext = createContext<SandboxDataValue | null>(null);
@@ -857,6 +890,17 @@ export function SandboxProvider({
       changeTeenPayId: (teenPayId) =>
         dispatchDb((db, actorId, at) => changeTeenPayIdTransition(db, { actorId, at, teenPayId })),
 
+      shieldAssessSend: (recipient, amount) =>
+        readDb((db, actorId) =>
+          assessSendSafety(db, actorId, recipient, amount, new Date().toISOString()),
+        ),
+      shieldAssessRequest: (requestId) =>
+        readDb((db, actorId) => assessRequestSafety(db, actorId, requestId)),
+      shieldAssessRequestCreate: (payer) =>
+        readDb((db, actorId) => assessRequestCreateSafety(db, actorId, payer)),
+      updateShieldSettings: (patch) =>
+        dispatchDb((db, actorId, at) => updateShieldSettingsTransition(db, { actorId, at, patch })),
+
       resolveQrIdentity: (payload) => readDb((db, actorId) => resolveQrRecipient(db, actorId, payload)),
       createQrPayload: () => readDb((db, actorId) => qrIdentityFor(db, actorId)),
       startQrPayment: (payload) => startFromQr(payload, "/send"),
@@ -978,6 +1022,7 @@ export function SandboxProvider({
         isFavourite: (teenPayId) => isFavourite(db, viewerId, teenPayId),
         lookup: (teenPayId) => lookupContact(db, viewerId, teenPayId),
       },
+      shield: shieldSettingsFor(db, viewerId),
     };
   }, [scope, viewerId, storageStatus, actions, db]);
 

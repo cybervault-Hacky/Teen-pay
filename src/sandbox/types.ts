@@ -14,6 +14,7 @@ import type {
   MoneySpace,
   PocketMoneySchedule,
   SecurityEvent,
+  ShieldSettingsRecord,
   User,
   Wallet,
 } from "@/domain";
@@ -140,6 +141,14 @@ export interface SandboxDatabase {
    * (`friends.ts`), which never touches money.
    */
   friendships?: Friendship[];
+  /**
+   * Teen Safety Shield reminders (Phase 14): each teen's optional
+   * confirmation preferences. Optional and additive — absent means the
+   * defaults apply, so every earlier v8 database is still a valid v8
+   * database (no migration). Validated whenever present. Written only
+   * by the shield engine (`shield.ts`), which never touches money.
+   */
+  shieldSettings?: ShieldSettingsRecord[];
   notifications: AppNotification[];
   familyLogs: FamilyLog[];
   securityEvents: SecurityEvent[];

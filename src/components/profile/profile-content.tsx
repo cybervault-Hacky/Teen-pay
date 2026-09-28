@@ -10,6 +10,7 @@ import {
   QrCode,
   RotateCcw,
   Shield,
+  ShieldCheck,
   Star,
   Users,
 } from "lucide-react";
@@ -214,6 +215,20 @@ export function ProfileContent() {
                   : "Trusted teens you can send to and request from"
               }
               href="/friends"
+            />
+          </Card>
+        </section>
+      )}
+
+      {isTeen && (
+        <section aria-label="Safety">
+          <SectionHeader title="Safety" />
+          <Card className="divide-y divide-line p-2">
+            <ListRow
+              icon={ShieldCheck}
+              title="Safety Shield"
+              subtitle="You're in control — see what TeenPay pauses and reviews for"
+              href="/safety"
             />
           </Card>
         </section>
