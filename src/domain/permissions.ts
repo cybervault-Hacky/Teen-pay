@@ -25,6 +25,8 @@ export type Permission =
   | "missions.use"
   /** Phase 12: keep one's own Friend Circle (trusted peers — never money, never authority). */
   | "friends.use"
+  /** Phase 13: use one's own TeenPay ID identity (lookup, copy, share, change). */
+  | "identity.use"
   // Guardian — a connected teen's money
   | "family.join"
   | "teen.view_overview"
@@ -51,6 +53,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "contacts.manage",
     "missions.use",
     "friends.use",
+    "identity.use",
     "family.disconnect",
   ],
   parent: [
@@ -85,6 +88,7 @@ export const TEEN_SELF_PERMISSIONS: readonly Permission[] = [
   "contacts.manage",
   "missions.use",
   "friends.use",
+  "identity.use",
 ];
 
 /** Permissions that need an active, linked guardian of the teen. */

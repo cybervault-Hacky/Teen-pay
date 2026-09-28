@@ -1,4 +1,12 @@
 import type { FamilyMembership } from "./family";
+import {
+  TEENPAY_ID_MAX,
+  TEENPAY_ID_MIN,
+  checkTeenPayId,
+  normalizeTeenPayId,
+  type TeenPayIdCheck,
+  type TeenPayIdProblem,
+} from "./identity";
 import type { Account, UserRole } from "./user";
 
 /**
@@ -14,85 +22,25 @@ export interface AccountProfile extends Account {
  * Domain: account creation rules — TeenPay IDs (usernames) and
  * display names. Pure and shared by the UI (live hints) and the
  * data layer (the rule that actually decides).
+ *
+ * Phase 13: the TeenPay ID rules themselves (normalization, pattern,
+ * reserved ids, internal-id refusal) live centrally in
+ * `domain/identity.ts`. The names below are kept so existing call
+ * sites stay untouched.
  */
 
-export const USERNAME_MIN = 3;
-export const USERNAME_MAX = 20;
+export const USERNAME_MIN = TEENPAY_ID_MIN;
+export const USERNAME_MAX = TEENPAY_ID_MAX;
 export const DISPLAY_NAME_MAX = 40;
-
-/** Lowercase letter first, then lowercase letters, digits, "_" or ".". */
-const USERNAME_PATTERN = /^[a-z][a-z0-9_.]*$/;
-
-/** Handles that would confuse people or impersonate the product. */
-const RESERVED_USERNAMES = new Set([
-  "admin",
-  "administrator",
-  "help",
-  "moderator",
-  "official",
-  "parent",
-  "root",
-  "sandbox",
-  "security",
-  "support",
-  "system",
-  "teen",
-  "teenpay",
-]);
-
-/**
- * Prefixes of the sandbox's internal record ids (accounts, wallets,
- * families, members, recipients, requests, operations, contacts…).
- * Phase 9: a new TeenPay ID can't start with one (it reads as
- * "reserved"), and the directory and QR parser refuse such input, so
- * an internal id can never pass for — or be looked up as — a person.
- */
-export const INTERNAL_ID_PREFIXES = [
-  "usr", "wal", "fam", "mem", "rec", "acc", "inv", "ctc", "prq", "p2p", "snd",
-  "trf", "apr", "ntf", "evt", "req", "pay", "pms", "spc", "space", "goal", "seed",
-  "frd",
-] as const;
-
-const INTERNAL_ID_PATTERN = new RegExp(`^(${INTERNAL_ID_PREFIXES.join("|")})_`, "i");
-
-/** True for strings shaped like an internal record id (`usr_…`, `wal_…`). */
-export function looksLikeInternalId(value: string): boolean {
-  return INTERNAL_ID_PATTERN.test(value.trim().replace(/^@+/, ""));
-}
 
 /** Trims, drops a leading "@", lowercases. */
 export function normalizeUsername(raw: string): string {
-  return raw.trim().replace(/^@+/, "").toLowerCase();
+  return normalizeTeenPayId(raw);
 }
 
-export type UsernameProblem =
-  | "empty"
-  | "too_short"
-  | "too_long"
-  | "invalid_start"
-  | "invalid_characters"
-  | "invalid_punctuation"
-  | "reserved"
-  | "taken";
+export type UsernameProblem = TeenPayIdProblem;
 
-const usernameMessages: Record<UsernameProblem, string> = {
-  empty: "Choose a TeenPay ID.",
-  too_short: `Use at least ${USERNAME_MIN} characters.`,
-  too_long: `Use ${USERNAME_MAX} characters or fewer.`,
-  invalid_start: "Start with a letter.",
-  invalid_characters: "Use letters, numbers, dots or underscores only.",
-  invalid_punctuation: "Dots and underscores can't repeat or come last.",
-  reserved: "That ID is reserved. Try another.",
-  taken: "That ID is already taken in this sandbox.",
-};
-
-export interface UsernameCheck {
-  /** The normalized form that would be saved. */
-  username: string;
-  problem: UsernameProblem | null;
-  /** Human message, or null when valid. */
-  message: string | null;
-}
+export type UsernameCheck = TeenPayIdCheck;
 
 /**
  * Validates a TeenPay ID. `isTaken` receives the normalized value;
@@ -102,25 +50,7 @@ export function checkUsername(
   raw: string,
   isTaken: (normalized: string) => boolean = () => false,
 ): UsernameCheck {
-  const username = normalizeUsername(raw);
-  const problem = ((): UsernameProblem | null => {
-    if (username.length === 0) return "empty";
-    if (!/^[a-z]/.test(username)) return "invalid_start";
-    if (!USERNAME_PATTERN.test(username)) return "invalid_characters";
-    if (username.length < USERNAME_MIN) return "too_short";
-    if (username.length > USERNAME_MAX) return "too_long";
-    if (/[_.]{2,}/.test(username) || /[_.]$/.test(username)) {
-      return "invalid_punctuation";
-    }
-    if (RESERVED_USERNAMES.has(username) || looksLikeInternalId(username)) return "reserved";
-    if (isTaken(username)) return "taken";
-    return null;
-  })();
-  return {
-    username,
-    problem,
-    message: problem ? usernameMessages[problem] : null,
-  };
+  return checkTeenPayId(raw, isTaken);
 }
 
 function hasControlCharacters(value: string): boolean {

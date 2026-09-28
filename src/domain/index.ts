@@ -18,6 +18,7 @@ export * from "./transaction";
 export * from "./recipient";
 export * from "./request";
 export * from "./peer";
+export * from "./identity";
 export * from "./qr";
 export * from "./contact";
 export * from "./friend";

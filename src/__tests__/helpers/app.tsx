@@ -18,9 +18,11 @@ import ContactsPage from "@/app/contacts/page";
 import CoachPage from "@/app/coach/page";
 import MissionsPage from "@/app/missions/page";
 import FriendsPage from "@/app/friends/page";
+import IdentityPage from "@/app/id/page";
 import SignInPage from "@/app/sign-in/page";
 import { AppShell } from "@/components/layout/app-shell";
 import { FriendDetail } from "@/components/friends/friend-detail";
+import { IdentityDetail } from "@/components/identity/identity-detail";
 import { MissionDetail } from "@/components/missions/mission-detail";
 import { RoleGate } from "@/components/sandbox/role-gate";
 import { SpaceDetail } from "@/components/spaces/space-detail";
@@ -46,15 +48,26 @@ const PAGES: Record<string, () => React.ReactNode> = {
   "/coach": () => <CoachPage />,
   "/missions": () => <MissionsPage />,
   "/friends": () => <FriendsPage />,
+  "/id": () => <IdentityPage />,
 };
 
 /**
- * `/money/[spaceId]`, `/missions/[missionId]` and
- * `/friends/[teenPayId]` — the real routes are async server
- * components, so tests render what they render: the gated client
- * detail.
+ * `/money/[spaceId]`, `/missions/[missionId]`, `/friends/[teenPayId]`
+ * and `/id/[teenPayId]` — the real routes are async server components,
+ * so tests render what they render: the gated client detail.
  */
 function dynamicPage(pathname: string): (() => React.ReactNode) | undefined {
+  const identity = /^\/id\/([^/]+)$/.exec(pathname);
+  if (identity) {
+    const teenPayId = decodeURIComponent(identity[1]!);
+    return function IdentityDetailPage() {
+      return (
+        <RoleGate role="teen">
+          <IdentityDetail teenPayId={teenPayId} />
+        </RoleGate>
+      );
+    };
+  }
   const friend = /^\/friends\/([^/]+)$/.exec(pathname);
   if (friend) {
     const teenPayId = decodeURIComponent(friend[1]!);

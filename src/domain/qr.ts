@@ -1,4 +1,5 @@
-import { checkUsername, looksLikeInternalId, normalizeUsername } from "./account";
+import { checkUsername, normalizeUsername } from "./account";
+import { looksLikeInternalId } from "./identity";
 
 /**
  * Domain: the TeenPay QR code (Phase 9).

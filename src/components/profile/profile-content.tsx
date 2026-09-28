@@ -25,6 +25,7 @@ import {
   selectTeensOf,
 } from "@/sandbox/selectors";
 import { useSandbox, useSandboxData } from "@/sandbox/store";
+import { IdentityCard } from "@/components/identity/identity-card";
 import { SecuritySection } from "@/components/profile/security-section";
 import { ThemeToggle } from "@/components/profile/theme-toggle";
 import { RoleSwitcher } from "@/components/sandbox/role-switcher";
@@ -135,27 +136,42 @@ export function ProfileContent() {
         </Card>
       </section>
 
-      {isTeen && qr && (
+      {isTeen && (
         <section aria-label="TeenPay ID">
           <SectionHeader title="TeenPay ID" />
-          <Card className="divide-y divide-line p-2">
-            <ListRow
-              icon={QrCode}
-              title="My TeenPay QR"
-              subtitle={`Let others scan to pay or request from ${qr.profile.handle}`}
-              href="/qr"
+          <div className="space-y-3">
+            <IdentityCard
+              name={me.name}
+              initials={me.avatarInitials}
+              handle={formatUsername(me)}
             />
-            <ListRow
-              icon={Star}
-              title="Favourites"
-              subtitle={
-                contacts.list.length === 0
-                  ? "Save people you pay often"
-                  : `${contacts.list.length} saved`
-              }
-              href="/contacts"
-            />
-          </Card>
+            <Card className="divide-y divide-line p-2">
+              <ListRow
+                icon={AtSign}
+                title="Find someone"
+                subtitle="Look up a teen by their exact TeenPay ID"
+                href="/id"
+              />
+              {qr && (
+                <ListRow
+                  icon={QrCode}
+                  title="My TeenPay QR"
+                  subtitle={`Let others scan to pay or request from ${qr.profile.handle}`}
+                  href="/qr"
+                />
+              )}
+              <ListRow
+                icon={Star}
+                title="Favourites"
+                subtitle={
+                  contacts.list.length === 0
+                    ? "Save people you pay often"
+                    : `${contacts.list.length} saved`
+                }
+                href="/contacts"
+              />
+            </Card>
+          </div>
         </section>
       )}
 

@@ -123,6 +123,12 @@ import {
   type SendFriendRequestOutcome,
 } from "./friends";
 import { qrIdentityFor, resolveQrRecipient, type QrIdentity } from "./qr";
+import {
+  changeTeenPayIdTransition,
+  checkTeenPayIdAvailability,
+  identityProfileFor,
+  type ChangeTeenPayIdOutcome,
+} from "./teenpay-id";
 import { coachReportFor } from "./coach";
 import {
   advanceMissionTransition,
@@ -130,7 +136,7 @@ import {
   missionDetailFor,
   startMissionTransition,
 } from "./missions";
-import type { CoachPeriod, CoachReport, FriendCircle, FriendPreview, MissionBoard, MissionView, PeerProfile } from "@/domain";
+import type { CoachPeriod, CoachReport, FriendCircle, FriendPreview, IdentityProfile, MissionBoard, MissionView, PeerProfile, TeenPayIdAvailability } from "@/domain";
 import type { SandboxDatabase, SandboxError, SandboxResult, SandboxState } from "./types";
 
 /**
@@ -355,6 +361,25 @@ export interface SandboxActions {
    * never history, payments, requests, Spaces or rules.
    */
   removeFriend: (teenPayId: string) => SandboxResult<{ removed: string }>;
+
+  // ── TeenPay ID (identity only — see identity.ts) ──
+  /**
+   * Structured availability for one TeenPay ID (`available`, `taken`,
+   * `reserved`, `invalid`). Never reveals who holds a taken ID.
+   */
+  checkTeenPayId: (teenPayId: string) => SandboxResult<TeenPayIdAvailability>;
+  /**
+   * The canonical identity lookup: one exact TeenPay ID → a safe
+   * public profile (handle, name, initials + relationship and action
+   * state), or the directory's neutral "No TeenPay user found."
+   */
+  identitySearch: (teenPayId: string) => SandboxResult<IdentityProfile>;
+  /**
+   * Changes the signed-in teen's own TeenPay ID — the alias only.
+   * The account id, wallets, ledger, friendships, requests and
+   * favourites are untouched; a freed ID becomes claimable again.
+   */
+  changeTeenPayId: (teenPayId: string) => SandboxResult<ChangeTeenPayIdOutcome>;
 
   // ── Money Coach (read-only — see coach.ts) ──
   /**
@@ -825,6 +850,12 @@ export function SandboxProvider({
         dispatchDb((db, actorId, at) => cancelFriendRequestTransition(db, { actorId, at, friendshipId })),
       removeFriend: (teenPayId) =>
         dispatchDb((db, actorId, at) => removeFriendTransition(db, { actorId, at, teenPayId })),
+
+      checkTeenPayId: (teenPayId) =>
+        readDb((db, actorId) => checkTeenPayIdAvailability(db, actorId, teenPayId)),
+      identitySearch: (teenPayId) => readDb((db, actorId) => identityProfileFor(db, actorId, teenPayId)),
+      changeTeenPayId: (teenPayId) =>
+        dispatchDb((db, actorId, at) => changeTeenPayIdTransition(db, { actorId, at, teenPayId })),
 
       resolveQrIdentity: (payload) => readDb((db, actorId) => resolveQrRecipient(db, actorId, payload)),
       createQrPayload: () => readDb((db, actorId) => qrIdentityFor(db, actorId)),

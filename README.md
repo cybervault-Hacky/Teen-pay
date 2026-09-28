@@ -863,6 +863,61 @@ app/friends/            /friends and /friends/[teenPayId] (protected, teen-only)
 - Friend requests expire only by decision (decline/cancel), not by a timer.
 - The circle cap (50) is fixed for the sandbox.
 
+## Phase 13 — TeenPay ID
+
+**Status.** Complete (sandbox). TeenPay ID is now the product's first-class identity layer: one stable, human-facing identifier (`@aarav`, `@meera`, `@rohan`) used consistently for discovery, Send Money, Request Money, Friend Circles, favourites and QR. **Identity is not a social network** — there are no public profiles, feeds, followers, likes or directory browsing. **Sandbox only:** everything lives in this browser's sandbox database; there is no server, no phone number, no KYC, no real payment rail of any kind.
+
+**Identity vs accounting.** Every person has exactly three names with separate jobs:
+
+| Name | Example | Job |
+| --- | --- | --- |
+| Internal account id | `usr_aarav` | Accounting ownership — stable, private, never shown, never typed, never reused |
+| Display name | `Aarav Sharma` | What friends and family see |
+| TeenPay ID | `@aarav` | The public alias — discovery, payments, requests, friends, favourites, QR |
+
+Money flows always resolve the TeenPay ID to the internal account id *before* anything is written, so an ID is just an alias: changing it can never move money, re-target a friendship or favourite, or hijack someone's history.
+
+**Architecture.**
+
+```
+domain/identity.ts        normalization, alphabet, reserved ids, availability, the safe projection shape
+sandbox/teenpay-id.ts     the engine: availability, identityProfileFor/search, changeTeenPayIdTransition
+sandbox/accounts.ts       account creation reuses the same centralized rules
+components/identity/      identity card, change-ID modal, /id lookup + shared identity surface
+app/id/                   /id and /id/[teenPayId] (protected, teen-only)
+```
+
+- `domain/identity.ts` centralizes everything Phase 4 used to call "username rules": one normalization (`"@Aarav"`, `" AARAV "` → `aarav` — case can never fork an identity), a conservative alphabet (lowercase letter first, then `a-z 0-9 . _`, 3–20 chars, no repeats/trailing punctuation), the reserved-id list, internal-id refusal, structured availability and the `IdentityProfile` projection shape. `domain/account.ts` keeps its old names, built on this module.
+- `sandbox/teenpay-id.ts` is the engine, authorized by the new teen-only `identity.use` permission (same architecture as `friends.use`; parents get the standard refusal). It writes **only** `db.accounts` — and only the one account whose owner asked, alias fields only (`username`, `identifier`, `updatedAt`). There is no path from it to `postOperation`.
+- The safe projection is built field-by-field (`peerProfileOf` + the Friend Circle's `relationOf` + favourites' `isFavourite`) — accounts are never spread into views. Unknown, malformed, internal-id-shaped, closed, suspended, parent or walletless lookups all read the same neutral "No TeenPay user found.", so a lookup never confirms that an ineligible account exists.
+
+**Validation rules.** `a-z 0-9 . _` only (lowercase letter first), 3–20 characters; spaces, emoji, uppercase, slashes, query strings, HTML, control characters and Unicode lookalikes are rejected by the alphabet itself; dots/underscores can't repeat or trail. Reserved ids (central list): `admin`, `administrator`, `api`, `family`, `guardian`, `help`, `moderator`, `official`, `parent`, `payments`, `root`, `sandbox`, `security`, `support`, `system`, `teen`, `teenpay`, `wallet`. Anything shaped like an internal record id (`usr_…`, `wal_…`, …) is refused everywhere — lookup, availability, change, QR and routes.
+
+**Availability.** `checkTeenPayIdAvailability` returns structured states — `available`, `taken`, `reserved`, `invalid` — with the normalized id and a human message, and nothing about *who* holds a taken id. Checking your own current id reports available (keeping it is an idempotent no-op).
+
+**Changing your TeenPay ID.** Profile → Change TeenPay ID, with live availability feedback and one atomic engine transition. Deterministic order: gate → normalize → validate → uniqueness → one replace of the alias fields. What is deliberately untouched: the account id, wallets, ledger, friendships (account-id keyed), money requests (account ids + historical handle snapshots), favourites (saved handles), notifications (historical text) and the QR payload format. **Documented limitation:** a freed ID becomes claimable again — exactly like a username anywhere. Old references keep pointing at the account id they always pointed at (money requests still pay the right account; an old favourite shows as unavailable rather than silently re-pointing), and the newcomer inherits nothing: no money, no friends, no history.
+
+**Profile.** Teens get an identity section: their ID large, with Copy (Clipboard API — handle only), Share (Web Share API where the browser offers it, identity text only, honest fallback otherwise) and Change. Parents get no identity card — `identity.use` is teen-only.
+
+**Search & the shared identity surface.** `/id` is the canonical exact-match lookup (normalized input, no fuzzy browsing). Search, the QR scanner and Friend Circles all land on the same `/id/[teenPayId]` surface: public profile, relationship badge, availability and the existing actions — Send Money / Request Money (deep-linked into the unchanged flows, `via=friend` once the friendship exists), favourite toggle, friend request/accept paths. Route params are validated and can never be interpreted as internal ids. Looking up your own ID opens your identity card instead.
+
+**Integrations — unchanged contracts.**
+- **Send / Request:** recipients are still shown as `@handle + name`; the engine still resolves to account ids; guardian thresholds, daily limits, balances, review steps and idempotency bind exactly as before.
+- **QR:** the payload format is untouched (`teenpay://user/@handle?v=1`) — it carries the current handle and nothing else; scanning still never moves money. After an ID change the code simply shows the new handle.
+- **Friend Circles:** reuse the same `relationOf` — one relationship, one place. Circles follow a rename automatically (they're account-id keyed).
+- **Favourites:** remain a separate concept (quick-access contacts, stored handles) and are not merged with friendship.
+- **Ledger:** never sees a TeenPay ID — ownership stays internal account ids.
+
+**Persistence.** No schema bump: the username already lives on the account record. Persisted usernames are now validated as untrusted input (`isValidTeenPayIdFormat`) — tampered ids fall through to the existing backup-and-recovery path. Reserved names are a claim-time rule, not a storage rule, so existing data is never rejected for claiming a name that later became reserved.
+
+**Tests.** New suites: `identity-domain` (normalization, valid/invalid/reserved ids, availability vocabulary), `identity-engine` (availability states, safe projection, canonical search, change-ID semantics), `identity-privacy` (exact projection shape, faceless availability, parent refusals, historical immutability), `identity-integration` (money through changed IDs with guardian rules intact, freed-ID no-inheritance, request lifecycle by account id, favourites degradation, Friend Circles and QR following the alias), `identity-ui` (profile card, copy/share, change flow, `/id` lookup and surface, route safety), `identity-security` (static audit: one accounts-only write, no account spreads into views, handle-only clipboard/share, URL safety, teen-only permission, centralized reserved list), and the 42-step `phase13-journey`. All earlier suites remain unchanged and green.
+
+**Limitations.**
+- Sandbox only, one device, no sync; "availability" is per-device.
+- Freed IDs become claimable again; old handle snapshots stay historical by design.
+- No ID-change cooldown or history log in the sandbox (a server would add both).
+- Exact-match lookup only — deliberately no fuzzy/people search.
+
 ## Design system
 
 All styling flows from the semantic tokens in `src/app/globals.css`:
@@ -900,5 +955,6 @@ Money is rendered exclusively through `AmountDisplay` (tabular numerals, INR for
 - **Phase 9** — QR Payments, Contacts & Fast Pay: a versioned TeenPay QR holding only the public TeenPay ID, a strict central validator, a camera scanner (BarcodeDetector) with an honest sandbox paste path, scan → confirm → existing Send/Request flow, owner-scoped favourites with Quick Pay / Quick Request, schema v8 migration
 - **Phase 10** — Money Coach: a read-only, teen-only view of your own money (week / month / 30 days) — available, set aside, received, spent — with deterministic factual insights, goal progress, lessons and documented definitions; no writes, no network, no AI, no score
 - **Phase 11** — Money Missions: ten short, optional, teen-only learning missions (reading, gentle checks, visiting Activity / Coach, and real evidence such as creating a Space) with deterministic progress saved in the one sandbox database; they never move money, need no spending and have no rewards, streaks, timers or reminders
-- **Phase 12 (this)** — Friend Circles: teen-only trusted peer circles found by TeenPay ID (request → accept/decline, cancel, remove) saved as an additive field in the one sandbox database (schema stays v8); friends open the existing Send/Request flows with guardian rules fully intact; not a social network — no feeds, no browsing, no money data shared
+- **Phase 12** — Friend Circles: teen-only trusted peer circles found by TeenPay ID (request → accept/decline, cancel, remove) saved as an additive field in the one sandbox database (schema stays v8); friends open the existing Send/Request flows with guardian rules fully intact; not a social network — no feeds, no browsing, no money data shared
+- **Phase 13 (this)** — TeenPay ID: the stable public identity layer — centralized normalization/validation/reserved ids, structured availability, copy/share/change on Profile, canonical exact-match lookup at `/id` with one shared identity surface, teen-only `identity.use`; identity is an alias over the stable internal account id, so changing it never moves money or re-targets relationships; no schema bump
 - **Later (recommendation only)** — a real auth provider behind `AuthService` and a cloud repository behind the repository contract, then real payment rails with a regulated provider

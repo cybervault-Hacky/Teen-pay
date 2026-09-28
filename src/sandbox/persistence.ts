@@ -15,6 +15,7 @@ import {
   INVITE_TTL_MS,
   isCalendarDate,
   isSpaceIcon,
+  isValidTeenPayIdFormat,
   MAX_SPACE_TARGET,
   primaryWalletId,
   productDay,
@@ -259,6 +260,12 @@ function hasValidAccountsAndFamilies(value: UnknownRecord): Set<unknown> | null 
   const ids = new Set((value.accounts as UnknownRecord[]).map((a) => a.id));
   const usernames = (value.accounts as UnknownRecord[]).map((a) => a.username);
   if (new Set(usernames).size !== usernames.length) return null;
+  // Phase 13: persisted TeenPay IDs are untrusted input — every stored
+  // username must still satisfy the identity format (deterministic,
+  // lowercase, conservative alphabet). Tampered ids fall through to the
+  // existing backup-and-recovery path. Reserved names are a claim-time
+  // rule, not a storage rule, so they are not re-checked here.
+  if (!usernames.every((u) => typeof u === "string" && isValidTeenPayIdFormat(u))) return null;
   if (!isArrayOf(value.families, isFamilyLike)) return null;
   // Every membership must point at a real account.
   for (const family of value.families as UnknownRecord[]) {

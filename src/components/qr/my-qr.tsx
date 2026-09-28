@@ -1,8 +1,8 @@
 "use client";
 
 import { Copy, ScanLine, Share2, ShieldCheck } from "lucide-react";
-import { useEffect, useState } from "react";
 import { useSandbox } from "@/sandbox/store";
+import { useIdentityActions } from "@/components/identity/use-identity-actions";
 import { PageHeader } from "@/components/layout/page-header";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -11,25 +11,18 @@ import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { QrCode } from "./qr-code";
 
-type ShareSupport = "unknown" | "available" | "unavailable";
-
 /**
  * "My TeenPay QR": the viewer's public identity as a scannable code.
  *
  * Shows only what anyone scanning it would learn — name and TeenPay
  * ID. No balance, account, wallet or family detail is on screen or in
- * the code. Copy uses the Clipboard API; Share uses the Web Share API
- * only where the browser really offers it (detected after mount), and
- * otherwise says so and points to Copy — nothing pretends to share.
+ * the code. Copy and Share come from the shared identity actions
+ * (`useIdentityActions`) — the same safe behaviour as the profile's
+ * identity card.
  */
 export function MyQr() {
   const { qr } = useSandbox();
-  const [status, setStatus] = useState("");
-  const [shareSupport, setShareSupport] = useState<ShareSupport>("unknown");
-
-  useEffect(() => {
-    setShareSupport(typeof navigator !== "undefined" && typeof navigator.share === "function" ? "available" : "unavailable");
-  }, []);
+  const { status, shareSupport, copy, share } = useIdentityActions(qr?.profile.handle ?? "");
 
   if (!qr) {
     return (
@@ -48,30 +41,6 @@ export function MyQr() {
   }
 
   const { profile, payload } = qr;
-
-  const copy = async () => {
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("unavailable");
-      await navigator.clipboard.writeText(profile.handle);
-      setStatus(`Copied ${profile.handle}.`);
-    } catch {
-      setStatus(`Copying isn't available here. Your TeenPay ID is ${profile.handle}.`);
-    }
-  };
-
-  const share = async () => {
-    try {
-      await navigator.share({
-        title: "My TeenPay ID",
-        text: `Pay or request from me on TeenPay (sandbox): ${profile.handle}`,
-      });
-      setStatus("Shared.");
-    } catch (error) {
-      // Dismissing the share sheet isn't an error worth announcing.
-      if (error instanceof Error && error.name === "AbortError") return;
-      setStatus(`Sharing didn't work. Your TeenPay ID is ${profile.handle} — copy it instead.`);
-    }
-  };
 
   return (
     <>

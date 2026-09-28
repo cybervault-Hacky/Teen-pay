@@ -200,7 +200,12 @@ function friendRecords(db: SandboxDatabase): Friendship[] {
   return db.friendships ?? [];
 }
 
-function relationOf(db: SandboxDatabase, viewerId: string, otherId: string): FriendRelation {
+/**
+ * The viewer's current relationship with one other account, as the
+ * Friend Circle sees it. Shared with the identity engine so the whole
+ * app derives one relationship from one place.
+ */
+export function relationOf(db: SandboxDatabase, viewerId: string, otherId: string): FriendRelation {
   const record = openRecordFor(db, viewerId, otherId);
   if (!record) return { kind: "none" };
   if (record.status === "accepted") {
