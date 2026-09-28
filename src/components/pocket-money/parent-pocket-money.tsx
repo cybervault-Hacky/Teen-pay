@@ -7,7 +7,6 @@ import {
   isOpenSchedule,
   SCHEDULE_STATUS_LABEL,
   type PocketMoneyScheduleStatus,
-  type User,
 } from "@/domain";
 import { formatINR } from "@/lib/currency";
 import { formatDateKey } from "@/lib/format";
@@ -44,7 +43,7 @@ type Notice = { tone: "info" | "danger"; text: string };
  * history. Every action goes through the engine, which re-authorizes
  * it — nothing here decides who may do what.
  */
-export function ParentPocketMoney({ teen }: { teen: User }) {
+export function ParentPocketMoney({ teen }: { teen: { id: string; displayName: string } }) {
   const { state, actions } = useSandbox();
   const viewer = selectSession(state).user;
   const open = selectOpenSchedule(state, viewer.id, teen.id);

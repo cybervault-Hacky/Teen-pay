@@ -964,6 +964,44 @@ Levels are `notice` and `confirm` only — there is no `block` in the shield voc
 - Reminders apply to confirm-level reasons only; notices always show.
 - No safety analytics of any kind, by design.
 
+## Phase 15 — Parent Control Center
+
+**Status.** Complete (sandbox). The Parent Control Center evolves the existing `/parent` screen into one calm command surface for a connected guardian: pending approvals, the rules in force, pocket money, account protection, family status and safe activity summaries — in that order. It is a **management layer over the existing engines**, not a second system: there is no new permission engine, no second approval path, no parallel ledger, and no new schema. **Sandbox only:** everything renders from the same scoped database every other screen uses.
+
+**One projection, built field by field.** Every figure on the screen comes from `selectParentCenter` / `selectTeenCenter` (`src/sandbox/parent-center.ts`): typed selectors that walk the family link first (`teensOfGuardian` + `canViewTeenOverview`) and then assemble identity, aggregate money, allowance, pending approvals, controls and derived activity row by row. No raw account, wallet or database object is ever spread into a "safe" profile; if the teen's wallet is not in the guardian's scope the money view is `null` and the UI says so plainly — never faked zeros.
+
+**Authorization boundary.** Family membership is the only door. The projection returns `null` for any teen the viewer is not linked to, for viewers who are not the linked guardian, and for anyone before authentication completes (the existing auth gate + `RoleGate` still front the route). Knowing a TeenPay ID or account id grants nothing; cross-family lookups refuse with the same selectors everyone else uses.
+
+**What parents see — and never see.**
+
+| Visible in the center | Stays private to the teen |
+| --- | --- |
+| Name, TeenPay ID handle, family status | Money Coach lessons & insights |
+| Available balance, total, set-aside *aggregate* | Money Space names, targets and details |
+| Pending approvals with decide actions | Mission progress |
+| Guardian rules + notification choices | Friend Circle graph & requests |
+| Allowance schedule, next transfer, history | Safety Shield warnings & settings |
+| Derived activity summaries (≤ 4 rows) | QR scans, searches, raw ledger, private notifications |
+
+Internal identifiers (`usr_…`, `wal_…`, `spc_…`, …) never render; the parent sees handles and names.
+
+**Controls.** The Controls section surfaces the existing guardian rules through `RulesSummary` (the same plain-words list the teen sees — no hidden restrictions) plus an **Edit rules** dialog that writes through the existing spending-rules transition, notification switches through the existing notifications transition, and account protection through the existing wallet freeze/unfreeze flow. The center evaluates no rule itself; the payment engine re-authorizes everything on confirm.
+
+**Approval Center.** Pending approvals render through the existing `GuardianApprovalCard`; approving executes through `approveTransferTransition` (peer engine, two-leg transfer, one idempotent operation) and declining through `decideApprovalTransition` (nothing moves, teen is told). Replaying a decision — UI double-click or engine-level repeat — never posts twice; unlinked guardians and the teen themself are refused by the same authorization used everywhere.
+
+**Pocket money.** The allowance section reuses the existing schedule engine and screen: create, edit, pause, resume, cancel, next-transfer date and the sandbox "process now" button. Failure states (insufficient funds, frozen wallets) are shown as the engine reports them — never as received money.
+
+**Multi-teen.** The selector maps over the guardian's linked teens only, and a switcher drives every downstream selector when more than one is present. Because a scope projects one wallet-teen per family today, a second linked teen appears with an honest "money not in view" state rather than invented figures. Cross-teen isolation is tested end to end (Parent A can never reach a teen linked only to Parent B).
+
+**Persistence.** No new schema version: the center reads existing fields and writes only through existing transitions (family controls, notifications, schedules, wallet status). Visiting the center never mutates the stored database.
+
+**Tests.** New suites: `parent-center-projection` (shape, authorization, privacy vocabulary, cross-teen isolation, honest multi-teen scoping), `parent-route-security` (teen/signed-out/settling access, no data before auth), `parent-controls-roundtrip` (threshold → approval → one transfer; daily-limit block; freeze/unfreeze round-trip), `parent-approvals` (decline, idempotent replay, unlinked-guardian refusal, two-leg posting), `parent-pocket-money-center` (schedule projection through pause/resume/cancel), `parent-privacy` (permitted summary only, aggregate Spaces, read-only rendering, writes confined to family controls), `parent-multi-teen` (switcher semantics + UI isolation), `parent-center-security` (static audit: no transition imports in the UI layer, read-only projection, no role-string bypasses, route protection), and the 46-step `phase15-journey`. All 1144 earlier tests remain green.
+
+**Limitations.**
+- The center manages what the existing architecture exposes: one wallet-teen per family scope, so multi-family guardians see the family in their current scope (the switcher is ready for the day scopes widen).
+- Activity is a short derived summary (four rows) — deep history stays on the teen's Activity screen by design.
+- No analytics, no exports, no remote notifications — sandbox honesty, as everywhere else.
+
 ## Design system
 
 All styling flows from the semantic tokens in `src/app/globals.css`:
@@ -1003,5 +1041,6 @@ Money is rendered exclusively through `AmountDisplay` (tabular numerals, INR for
 - **Phase 11** — Money Missions: ten short, optional, teen-only learning missions (reading, gentle checks, visiting Activity / Coach, and real evidence such as creating a Space) with deterministic progress saved in the one sandbox database; they never move money, need no spending and have no rewards, streaks, timers or reminders
 - **Phase 12** — Friend Circles: teen-only trusted peer circles found by TeenPay ID (request → accept/decline, cancel, remove) saved as an additive field in the one sandbox database (schema stays v8); friends open the existing Send/Request flows with guardian rules fully intact; not a social network — no feeds, no browsing, no money data shared
 - **Phase 13** — TeenPay ID: the stable public identity layer — centralized normalization/validation/reserved ids, structured availability, copy/share/change on Profile, canonical exact-match lookup at `/id` with one shared identity surface, teen-only `identity.use`; identity is an alias over the stable internal account id, so changing it never moves money or re-targets relationships; no schema bump
-- **Phase 14 (this)** — Teen Safety Shield: a deterministic, explainable safety layer beside the payment engine — six derived reason codes (first payment, not-in-circle, large share, rapid repeat, unknown requester, renamed requester) producing calm `notice` / `confirm` outcomes only; optional per-teen reminders at `/safety` that can soften confirmations into notices but never touch required protections; no scores, no labels, no notifications, no history, no parent visibility, no schema bump
+- **Phase 14** — Teen Safety Shield: a deterministic, explainable safety layer beside the payment engine — six derived reason codes (first payment, not-in-circle, large share, rapid repeat, unknown requester, renamed requester) producing calm `notice` / `confirm` outcomes only; optional per-teen reminders at `/safety` that can soften confirmations into notices but never touch required protections; no scores, no labels, no notifications, no history, no parent visibility, no schema bump
+- **Phase 15 (this)** — Parent Control Center: the existing `/parent` screen becomes one calm command surface over the existing family/guardian architecture — a centralized parent-safe projection built field by field (never spread raw objects), pending approvals decided through the existing approval engine with replay-proof idempotency, guardian rules surfaced and edited through the existing transitions, wallet freeze/unfreeze, pocket money management, family status, and derived activity summaries; family membership is the only authorization boundary (no arbitrary TeenPay ID lookups), teen-private areas (Coach, Missions, Friend Circles, Safety Shield, QR/search history, raw ledger) never cross into the parent view, and Money Spaces appear as one aggregate; no new permission engine, no second ledger, no schema bump
 - **Later (recommendation only)** — a real auth provider behind `AuthService` and a cloud repository behind the repository contract, then real payment rails with a regulated provider

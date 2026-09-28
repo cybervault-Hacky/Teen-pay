@@ -1,26 +1,15 @@
 "use client";
 
-import { SlidersHorizontal, UserPlus } from "lucide-react";
+import { UserPlus } from "lucide-react";
 import { useState } from "react";
-import { formatUsername, type User } from "@/domain";
 import { formatINR } from "@/lib/currency";
-import { formatDayLabel } from "@/lib/format";
 import { entryIcon } from "@/lib/transaction-icons";
 import {
-  listWalletEntries,
-  selectAvailableBalance,
-  selectControls,
-  selectFlowTotals,
-  selectPendingApprovals,
-  selectRecentApprovalDecisions,
-  selectSession,
-  selectAllocatedTotal,
-  selectTeensOf,
-  selectTeenWallet,
-  selectTotal,
-  toTransaction,
-} from "@/sandbox/selectors";
-import { canManageSpendingRules, canViewTeenOverview } from "@/sandbox/authorization";
+  selectParentCenter,
+  type ParentCenterView,
+  type TeenCenterView,
+} from "@/sandbox/parent-center";
+import { selectFlowTotals, selectSession } from "@/sandbox/selectors";
 import { useSandbox } from "@/sandbox/store";
 import { AmountDisplay } from "@/components/ui/amount";
 import { Avatar } from "@/components/ui/avatar";
@@ -28,17 +17,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Modal } from "@/components/ui/modal";
 import { SectionHeader } from "@/components/ui/section-header";
-import { Switch } from "@/components/ui/switch";
 import { TransactionRow } from "@/components/ui/transaction-row";
 import { GuardianApprovalCard } from "@/components/family/approval-cards";
-import { RulesSummary } from "@/components/family/rules-summary";
 import { ParentPocketMoney } from "@/components/pocket-money/parent-pocket-money";
-import { SendPocketMoney } from "./send-pocket-money";
-import { SpendingRulesForm } from "./spending-rules-form";
 import { FrozenBanner } from "@/components/wallet/frozen-banner";
 import { WalletCard } from "@/components/wallet/wallet-card";
+import { ParentControls } from "./parent-controls";
+import { ParentFamilyCard } from "./parent-family-card";
+import { SendPocketMoney } from "./send-pocket-money";
 
 const decisionCopy = {
   approved: "Approved",
@@ -47,23 +34,24 @@ const decisionCopy = {
 } as const;
 
 /**
- * The parent/guardian dashboard.
+ * The Parent Control Center — the parent-facing command surface for
+ * the family's existing TeenPay relationship and controls.
  *
- * Grouped into a few sections: who this is about, what needs a
- * decision, today's rules, pocket money, notifications, and the
- * shared ledger. Every action goes through the sandbox engine —
- * the same ledger and rules power the teen's screens.
+ * A management layer, not a second system: every figure comes from
+ * the parent-safe projection (`selectParentCenter`), and every action
+ * goes through the same guardian transitions, authorization and
+ * ledger the teen's screens use. Priorities, top down: pending
+ * approvals, controls, pocket money, family, activity. Teen-private
+ * areas (Coach, Missions, Friend Circles, Safety Shield) stay out of
+ * scope entirely.
  */
 export function ParentContent() {
   const { state } = useSandbox();
   const session = selectSession(state);
-  const teens = selectTeensOf(state, session.user.id).filter((t) =>
-    canViewTeenOverview(state, session.user.id, t.id),
-  );
+  const center = selectParentCenter(state, session.user.id);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const teen = teens.find((t) => t.id === selectedId) ?? teens[0] ?? null;
 
-  if (!teen) {
+  if (!center || center.teens.length === 0) {
     return (
       <Card>
         <EmptyState
@@ -81,96 +69,135 @@ export function ParentContent() {
     );
   }
 
+  const teen =
+    center.teens.find((t) => t.teen.accountId === selectedId) ?? center.teens[0]!;
+
   return (
     <div>
       <p className="-mt-2 mb-6 text-xs text-ink-faint">
         Sandbox preview — no verification, no real money.
       </p>
-      {teens.length > 1 && (
-        <div role="group" aria-label="Choose a teen" className="mb-5 flex flex-wrap gap-2">
-          {teens.map((t) => (
-            <Button
-              key={t.id}
-              size="sm"
-              variant={t.id === teen.id ? "primary" : "secondary"}
-              aria-pressed={t.id === teen.id}
-              onClick={() => setSelectedId(t.id)}
-            >
-              {t.displayName}
-            </Button>
-          ))}
+
+      {/* Greeting + which teen this view is managing. */}
+      <section aria-label="Parent overview" className="space-y-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight text-ink">
+              Hello, {firstName(center.parent.displayName)}
+            </h2>
+            <p className="mt-0.5 text-sm text-ink-muted">
+              {center.teens.length === 1
+                ? `Everything for ${center.teens[0]!.teen.displayName}, in one calm place.`
+                : "Choose which of your teens you're managing."}
+            </p>
+          </div>
+          {center.invitePendingReview && (
+            <Badge tone="warning">{center.invitePendingReview.teenName} asked to connect</Badge>
+          )}
         </div>
-      )}
-      <TeenDashboard teen={teen} />
+
+        {center.teens.length > 1 && (
+          <div role="group" aria-label="Choose a teen to manage" className="flex flex-wrap gap-2">
+            {center.teens.map((t) => (
+              <Button
+                key={t.teen.accountId}
+                size="sm"
+                variant={t.teen.accountId === teen.teen.accountId ? "primary" : "secondary"}
+                aria-pressed={t.teen.accountId === teen.teen.accountId}
+                onClick={() => setSelectedId(t.teen.accountId)}
+              >
+                {t.teen.displayName} · {t.teen.handle}
+              </Button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <TeenCenter key={teen.teen.accountId} center={center} teen={teen} />
     </div>
   );
 }
 
-function TeenDashboard({ teen }: { teen: User }) {
-  const { state, actions } = useSandbox();
+function firstName(displayName: string): string {
+  return displayName.split(" ")[0] ?? displayName;
+}
+
+function TeenCenter({
+  center,
+  teen,
+}: {
+  center: ParentCenterView;
+  teen: TeenCenterView;
+}) {
   const [announcement, setAnnouncement] = useState("");
-  const [sheet, setSheet] = useState<"rules" | null>(null);
-
-  const available = selectAvailableBalance(state);
-  const total = selectTotal(state);
-  // The aggregate only: which Spaces, their names and goals stay
-  // private to the teen (and aren't in a guardian's scope at all).
-  const allocated = selectAllocatedTotal(state);
-  const flows = selectFlowTotals(state);
-  const controls = selectControls(state, teen.id);
-  // UI hint only — the engine re-authorizes every change.
-  const mayManage = canManageSpendingRules(state, selectSession(state).user.id, teen.id);
-  const pending = selectPendingApprovals(state, { teenId: teen.id });
-  const decided = selectRecentApprovalDecisions(state, 3).filter(
-    (a) => a.teenId === teen.id,
-  );
-
-  // The teen's wallet — only in scope for their linked guardian.
-  const teenWallet = selectTeenWallet(state);
-  const recentEntries = teenWallet ? listWalletEntries(state, teenWallet.id).slice(0, 4) : [];
-
-  const closeSheet = (message?: string) => {
-    setSheet(null);
-    if (message) setAnnouncement(message);
-  };
-
-  const toggleNotification = (key: "payments" | "savings", value: boolean) => {
-    if (!controls) return;
-    const result = actions.updateGuardianNotifications({
-      teenId: teen.id,
-      payments: key === "payments" ? value : controls.notifications.payments,
-      savings: key === "savings" ? value : controls.notifications.savings,
-    });
-    setAnnouncement(result.ok ? "Notification settings saved." : result.error.message);
-  };
+  const pending = teen.approvals.pending;
+  const decided = teen.approvals.recentDecisions;
+  const walletVisible = teen.family.walletVisible;
 
   return (
-    <div className="space-y-8">
+    <div className="mt-6 space-y-8">
       <p role="status" aria-live="polite" className="sr-only">
         {announcement}
       </p>
 
-      {/* Who this is about. */}
+      {/* Who this is about, and the money summary. */}
       <section aria-label="Teen overview" className="space-y-3">
         <Card className="flex flex-wrap items-center justify-between gap-4 p-5">
           <div className="flex min-w-0 items-center gap-3.5">
-            <Avatar name={teen.name} initials={teen.avatarInitials} size="lg" />
+            <Avatar name={teen.teen.fullName} initials={teen.teen.initials} size="lg" />
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-ink">{teen.name}</p>
+              <p className="truncate text-sm font-semibold text-ink">{teen.teen.fullName}</p>
               <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-faint">
                 <Badge tone="neutral">Teen</Badge>
-                <span>{formatUsername(teen)}</span>
+                <span>{teen.teen.handle}</span>
               </p>
             </div>
           </div>
           <div className="shrink-0 text-right">
-            <p className="text-xs text-ink-faint">Available</p>
-            <AmountDisplay value={available} size="lg" />
-            <p className="mt-0.5 text-xs text-ink-faint">{formatINR(total)} total</p>
+            {teen.money ? (
+              <>
+                <p className="text-xs text-ink-faint">Available</p>
+                <AmountDisplay value={teen.money.available} size="lg" />
+                <p className="mt-0.5 text-xs text-ink-faint">
+                  {formatINR(teen.money.total)} total
+                </p>
+              </>
+            ) : (
+              <p className="max-w-[240px] text-xs leading-relaxed text-ink-muted">
+                Money details aren&apos;t in view for {teen.teen.displayName} in this sandbox.
+              </p>
+            )}
           </div>
         </Card>
-        {teenWallet && (
-          <WalletCard wallet={teenWallet} title={`${teen.displayName}'s wallet`} showBalance={false} />
+
+        {/* The numbers that matter, at a glance. */}
+        {teen.money && (
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <StatCard
+              label="Total"
+              value={formatINR(teen.money.total)}
+              hint="Wallet + Spaces"
+            />
+            <StatCard
+              label="Set aside"
+              value={formatINR(teen.money.allocated)}
+              hint="Details stay private"
+            />
+            <StatCard
+              label="Pocket money"
+              value={
+                teen.allowance
+                  ? `${formatINR(teen.allowance.amount)} · ${teen.allowance.cadence}`
+                  : "Not set up"
+              }
+              small
+            />
+            <StatCard
+              label="Pending approvals"
+              value={String(pending.length)}
+              hint={pending.length > 0 ? "Needs your decision" : undefined}
+            />
+          </div>
         )}
         {announcement && (
           <p className="rounded-xl bg-accent/10 px-4 py-2.5 text-sm text-ink" aria-hidden>
@@ -179,7 +206,7 @@ function TeenDashboard({ teen }: { teen: User }) {
         )}
       </section>
 
-      {/* What needs a decision. */}
+      {/* 1. What needs a decision. */}
       <section aria-label="Approvals">
         <SectionHeader title="Approvals" />
         {pending.length > 0 ? (
@@ -196,8 +223,10 @@ function TeenDashboard({ teen }: { teen: User }) {
           <Card className="px-5 py-4">
             <p className="text-sm text-ink-muted">
               Nothing waiting.{" "}
-              {controls?.approval.threshold != null
-                ? `${teen.displayName} will ask you before sending more than ${formatINR(controls.approval.threshold)}.`
+              {teen.controls?.approval.threshold != null
+                ? `${teen.teen.displayName} will ask you before sending more than ${formatINR(
+                    teen.controls.approval.threshold,
+                  )}.`
                 : "Turn on “Ask me first” in the rules to review bigger payments."}
             </p>
           </Card>
@@ -218,95 +247,136 @@ function TeenDashboard({ teen }: { teen: User }) {
         )}
       </section>
 
-      {/* Today and the rules. */}
-      <section aria-label="Spending rules">
-        <SectionHeader
-          title="Today & rules"
-          action={
-            mayManage && (
-            <Button variant="ghost" size="sm" onClick={() => setSheet("rules")}>
-              <SlidersHorizontal className="h-4 w-4" aria-hidden />
-              Edit rules
-            </Button>
-            )
-          }
-        />
-        <RulesSummary teenId={teen.id} perspective="guardian" />
+      {/* 2. Controls: rules, account protection, notifications. */}
+      <section aria-label="Controls" className="space-y-3">
+        <SectionHeader title="Controls" />
+        <ParentControls center={teen} onAnnounce={setAnnouncement} />
+        <div>
+          <h3 className="mb-2 px-1 text-sm font-medium text-ink">Account protection</h3>
+          {walletVisible ? (
+            <TeenWalletCard teen={teen} />
+          ) : (
+            <Card className="px-5 py-4">
+              <p className="text-sm text-ink-muted">
+                Account protection applies to money you can see in this view.
+              </p>
+            </Card>
+          )}
+        </div>
       </section>
 
-      {/* Pocket money: the recurring schedule, then a one-off send. */}
+      {/* 3. Pocket money: the recurring schedule, then a one-off send. */}
       <section aria-label="Pocket money">
         <SectionHeader title="Pocket money" />
-        {teenWallet && teenWallet.status !== "active" && (
+        {teen.wallet && teen.wallet.status !== "active" && (
           <div className="mb-3">
-            <FrozenBanner wallet={teenWallet} ownerName={`${teen.displayName}'s`} />
+            <TeenFrozenBanner teen={teen} />
           </div>
         )}
-        <ParentPocketMoney teen={teen} />
+        <ParentPocketMoney
+          teen={{ id: teen.teen.accountId, displayName: teen.teen.displayName }}
+        />
         <Card className="mt-3 p-5">
           <h3 className="mb-3 text-xs font-semibold uppercase tracking-[0.1em] text-ink-faint">
             Send once
           </h3>
           <SendPocketMoney
-            teenName={teen.displayName}
-            paused={teenWallet !== null && teenWallet.status !== "active"}
+            teenName={teen.teen.displayName}
+            paused={teen.wallet !== null && teen.wallet.status !== "active"}
           />
         </Card>
       </section>
 
-      {/* Notifications. */}
-      {controls && (
-        <section aria-label="Notification settings">
-          <SectionHeader title="Notify me about" />
-          <Card className="divide-y divide-line">
-            <Switch
-              className="px-5 py-4"
-              label="Payments"
-              description={`Every payment ${teen.displayName} sends.`}
-              checked={controls.notifications.payments}
-              onChange={(value) => toggleNotification("payments", value)}
-            />
-            <Switch
-              className="px-5 py-4"
-              label="Saving"
-              description="Money moved into a Money Space (the amount only)."
-              checked={controls.notifications.savings}
-              onChange={(value) => toggleNotification("savings", value)}
-            />
-            <p className="px-5 py-3.5 text-xs text-ink-muted">
-              Approval requests always reach you. {teen.displayName} can see
-              these settings in Family.
-            </p>
-          </Card>
-        </section>
-      )}
+      {/* 4. Family status. */}
+      <section aria-label="Family">
+        <SectionHeader title="Family" />
+        <ParentFamilyCard center={center} selectedTeenId={teen.teen.accountId} />
+      </section>
 
-      {/* The shared ledger. */}
+      {/* 5. Activity — derived summaries, never raw entries. */}
       <section aria-label="Recent activity">
         <Card>
           <p className="px-5 pb-1 pt-4 text-xs font-semibold uppercase tracking-[0.1em] text-ink-faint">
             Recent activity
           </p>
-          <ul className="divide-y divide-line">
-            {recentEntries.map((entry) => (
-              <TransactionRow
-                key={entry.id}
-                transaction={{
-                  ...toTransaction(state, entry),
-                  subtitle: formatDayLabel(entry.createdAt),
-                  when: formatDayLabel(entry.createdAt),
-                }}
-                icon={entryIcon(entry)}
-              />
-            ))}
-          </ul>
+          {teen.activity.length > 0 ? (
+            <ul className="divide-y divide-line">
+              {teen.activity.map((row) => (
+                <TransactionRow
+                  key={row.id}
+                  transaction={row}
+                  icon={entryIcon({ type: row.entryType })}
+                />
+              ))}
+            </ul>
+          ) : (
+            <p className="px-5 pb-4 pt-1 text-sm text-ink-muted">Nothing to show yet.</p>
+          )}
         </Card>
       </section>
 
-      <Card className="p-5">
-        <p className="text-xs font-semibold uppercase tracking-[0.1em] text-ink-faint">
-          Overview
-        </p>
+      <MoneySummaryCard teen={teen} />
+
+      <p className="text-xs leading-relaxed text-ink-faint">
+        Money Coach, Missions, Friend Circles and the Safety Shield stay private to{" "}
+        {teen.teen.displayName}. You see the money you&apos;re connected to and the rules you
+        set — nothing more.
+      </p>
+    </div>
+  );
+}
+
+/** The teen's wallet card, rendered only when the wallet is in scope. */
+function TeenWalletCard({ teen }: { teen: TeenCenterView }) {
+  const wallet = useTeenWallet(teen);
+  if (!wallet) return null;
+  return (
+    <WalletCard wallet={wallet} title={`${teen.teen.displayName}'s wallet`} showBalance={false} />
+  );
+}
+
+/** The freeze notice, rendered only when the wallet is in scope. */
+function TeenFrozenBanner({ teen }: { teen: TeenCenterView }) {
+  const wallet = useTeenWallet(teen);
+  if (!wallet) return null;
+  return <FrozenBanner wallet={wallet} ownerName={`${teen.teen.displayName}'s`} />;
+}
+
+/** The scoped wallet behind a projection id — null when out of scope. */
+function useTeenWallet(teen: TeenCenterView) {
+  const { state } = useSandbox();
+  return state.wallets.find((w) => w.id === teen.wallet?.walletId) ?? null;
+}
+
+function StatCard({
+  label,
+  value,
+  hint,
+  small,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  small?: boolean;
+}) {
+  return (
+    <Card className="p-3.5">
+      <p className="text-[11px] text-ink-faint">{label}</p>
+      <p className={`mt-1 font-semibold tracking-tight text-ink ${small ? "text-sm" : "text-lg"}`}>
+        {value}
+      </p>
+      {hint && <p className="mt-0.5 text-[11px] text-ink-muted">{hint}</p>}
+    </Card>
+  );
+}
+
+function MoneySummaryCard({ teen }: { teen: TeenCenterView }) {
+  const { state } = useSandbox();
+  const flows = teen.family.walletVisible ? selectFlowTotals(state) : null;
+  return (
+    <Card className="p-5">
+      <p className="text-xs font-semibold uppercase tracking-[0.1em] text-ink-faint">Overview</p>
+      {flows ? (
         <div className="mt-3 grid grid-cols-2 gap-4">
           <div>
             <p className="text-xs text-ink-faint">Money in</p>
@@ -317,24 +387,17 @@ function TeenDashboard({ teen }: { teen: User }) {
             <AmountDisplay value={flows.moneyOut} size="md" className="mt-1" />
           </div>
         </div>
-        <p className="mt-4 border-t border-line pt-3.5 text-xs text-ink-muted">
-          Set aside in Money Spaces: {formatINR(allocated)} · the details stay private to {teen.displayName}
+      ) : (
+        <p className="mt-3 text-sm text-ink-muted">
+          Money summaries appear once this teen&apos;s wallet is in view.
         </p>
-      </Card>
-
-      <p className="text-xs text-ink-faint">
-        Parent and teen read the same sandbox ledger — your pocket money leaves
-        your wallet and arrives in {teen.displayName}&apos;s as one linked transfer.
-      </p>
-
-      <Modal open={sheet === "rules"} onClose={() => closeSheet()} title="Spending rules">
-        <SpendingRulesForm
-          teenId={teen.id}
-          teenName={teen.displayName}
-          onSaved={(message) => closeSheet(message)}
-          onCancel={() => closeSheet()}
-        />
-      </Modal>
-    </div>
+      )}
+      {teen.money && (
+        <p className="mt-4 border-t border-line pt-3.5 text-xs text-ink-muted">
+          In Money Spaces: {formatINR(teen.money.allocated)} · the details stay private to{" "}
+          {teen.teen.displayName}
+        </p>
+      )}
+    </Card>
   );
 }

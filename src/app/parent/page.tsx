@@ -4,8 +4,8 @@ import { RoleGate } from "@/components/sandbox/role-gate";
 import { Badge } from "@/components/ui/badge";
 
 export const metadata = {
-  title: "Parent overview",
-  description: "A sandbox preview of how a parent or guardian sees their teen's money.",
+  title: "Parent Control Center",
+  description: "Manage your family's TeenPay — controls, approvals and pocket money in one calm place.",
 };
 
 export default function ParentPage() {
@@ -13,7 +13,7 @@ export default function ParentPage() {
     <RoleGate role="parent">
       <PageHeader
         title="Overview"
-        description="Your teen's money and the family rules you've set."
+        description="Your family's control center — approvals, rules and pocket money, on top of the same rules your teen sees."
         actions={<Badge tone="warning">Sandbox</Badge>}
       />
       <ParentContent />
